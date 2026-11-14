@@ -46,7 +46,7 @@
   .verdict { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 20px; border: 2.5px solid var(--green); background: var(--green-bg);
              border-radius: 12px; padding: 10px 20px; transition: background .3s, border-color .3s; }
   .stamp { font-family: var(--serif); font-weight: 900; font-size: 26px; letter-spacing: 3px; color: var(--green); border: 3.5px solid currentColor; border-radius: 7px;
-           padding: 2px 14px; transform: rotate(-3deg); white-space: nowrap; text-transform: uppercase; }
+           padding: 2px 14px; transform: rotate(-3deg); white-space: nowrap; text-transform: uppercase; margin: 0 10px 0 4px; }
   .verdict .what { font-family: var(--serif); font-size: 21px; font-weight: 500; line-height: 1.25; }
   .verdict .count { text-align: center; } .verdict .count b { display: block; font-family: var(--serif); font-size: 30px; line-height: 1; }
   .verdict .count span { font-size: 12px; color: var(--ink-soft); }
@@ -306,8 +306,9 @@ function onDiagnosis(d) {
     fixedTimer = setTimeout(() => { if (state[L] === "fixed") { state[L] = "stable"; render(); } }, 9000);
     fixes[L] = null;
   } else {
+    const SETTINGS_ISSUES = ["overshoot", "not_fixed", "slow", "steady_error", "saturated", "jitter"];
     const prev = [...log].reverse().find(e => e.lab === L && e.result === "applied");
-    if (prev) prev.result = "partial";
+    if (prev && SETTINGS_ISSUES.includes(d.issue)) prev.result = "partial";   // drag or a loose probe isn't the fix's fault
     state[L] = "mistake";
     lastIssue[L] = d.issue || "";
     fixes[L] = d.fix || null;
@@ -368,7 +369,7 @@ $("voiceSel").onchange = e => {
   try { localStorage.setItem("kelvinVoice", e.target.value); } catch (err) {}
   lastSaid = ""; speak("Hi, I'm Kelvin. I'll tell you when something in your lab goes wrong.");
 };
-function speak(text) {
+function speak(text, followUp) {   // followUp: let the student answer without saying "Kelvin" first
   if (!text || !$("voice").checked || !window.speechSynthesis) return;
   const now = Date.now();
   if (text === lastSaid && now - lastSaidAt < 15000) return;   // never say the same line twice
@@ -381,8 +382,8 @@ function speak(text) {
       if (voicePick) utter.voice = voicePick;
       utter.rate = 1.0; utter.pitch = 0.95; utter.volume = 0.9;
       quietUntil = Date.now() + 1500 + spoken.split(/\s+/).length * 450;   // rough speaking time, in case onend never fires
-      if (handsFree) openFollowUp(quietUntil);
-      utter.onend = utter.onerror = () => { quietUntil = Date.now() + 700; if (handsFree) openFollowUp(quietUntil); };
+      if (handsFree && followUp) openFollowUp(quietUntil);
+      utter.onend = utter.onerror = () => { quietUntil = Date.now() + 700; if (handsFree && followUp) openFollowUp(quietUntil); };
       speechSynthesis.speak(utter);
     }, 120);
   } catch (e) {}
@@ -392,10 +393,10 @@ function speak(text) {
 // ------------------------------------------------------------ ask Kelvin
 const asked = { motor: "", cooling: "" };
 function onAnswer(a) {
-  if (a.report_sent) $("rTa").textContent = a.report_sent === "ok" ? "Sent to TA ✓" : "Not sent";
+  if (a.report_sent && $("rTAStatus")) $("rTAStatus").textContent = a.report_sent === "ok" ? "Sent to TA ✓" : "Not sent";
   asked[lab] = a.from === "ta" ? (a.question ? "Your TA texted: " + a.question : "Message from your TA") : "You asked: " + a.question;
   message[lab] = a.text;
-  render(); speak(a.text);
+  render(); speak(a.text, a.from !== "ta");
 }
 function askKelvin(q) {
   q = (q || "").trim(); if (!q) return;
@@ -786,14 +787,17 @@ function draw() {
   line("b", "#8a8471", 2.5, [7, 6]);
   line("a", state[lab] === "mistake" ? "#c0392b" : "#2457a6", 3.2);
   // handwritten annotations where Kelvin caught something
+  let lastLabelX = -1e9, row = 0;
   for (const m of marks[lab]) {
     if (m.t < tStart) continue;
     const px = X(m.t), col = m.good ? "#2f7d4f" : "#c0392b";
+    row = Math.abs(px - lastLabelX) < 150 ? 1 - row : 0;     // labels close together go on two rows
+    lastLabelX = px;
     x.strokeStyle = col; x.lineWidth = 1.5; x.setLineDash([3, 4]);
     x.beginPath(); x.moveTo(px, T - 6); x.lineTo(px, B); x.stroke(); x.setLineDash([]);
     x.font = "700 22px Caveat, 'Segoe Print', cursive"; x.fillStyle = col;
     x.textAlign = px > (L + R) / 2 ? "right" : "left";
-    x.fillText(m.text, px + (x.textAlign === "left" ? 6 : -6), T - 10);
+    x.fillText(m.text, px + (x.textAlign === "left" ? 6 : -6), T - 10 + row * 24);
   }
 }
 

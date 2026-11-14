@@ -252,6 +252,7 @@ def stuck_watchdog():
 SAFE = {"kp": (0.01, 20.0), "ki": (0.0, 20.0), "kd": (0.0, 5.0)}      # Kelvin applies these on its own
 HARD = {"kp": (0.001, 60.0), "ki": (0.0, 60.0), "kd": (0.0, 15.0)}    # past SAFE but inside HARD needs the TA's OK
 pending_fix = {"motor": None, "cooling": None}   # the suggested fix waiting for "apply"
+open_diag = {"motor": None, "cooling": None}     # the mistake on screen right now, resent when a dashboard (re)connects
 undo_stack = []                                  # earlier settings, newest last
 stepper = {"low": 40.0, "high": 100.0, "on": True, "seconds": 4.0}
 MEASURE_WORDS = r"\b(half|third|quarter|double|twice|times|percent|more|less|lower|higher|bigger|smaller|bit)\b"
@@ -271,6 +272,7 @@ def apply_settings(new: dict, why: str = "applied"):
         motor_link.write(f"K,{settings['kp']},{settings['ki']},{settings['kd']}")
     motor_watch.arm_verify()
     pending_fix["motor"] = None
+    open_diag["motor"] = None                    # the dashboard now shows "testing fix", not the old mistake
     session["applied"] += 1
     remember_event("motor", f"student {why} {fmt_fix(new)}, settings now kp {settings['kp']:g} ki {settings['ki']:g} kd {settings['kd']:g}")
     print("[fix applied]", settings)
@@ -628,6 +630,7 @@ def diagnose(lab: str, issue: str, facts: dict, fix: dict | None = None):
         if fix:
             msg["fix"] = fix
         print(f"[diagnosis] {lab} {issue}: {final}  fix={fix}")
+        open_diag[lab] = None if good else msg
         remember_event(lab, final + (" Suggested fix: " + ", ".join(f"{k} to {v}" for k, v in fix.items()) + "." if fix else ""))
         send(msg)
 
@@ -931,6 +934,10 @@ async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     clients.add(ws)
     await ws.send_text(json.dumps({"type": "settings", **settings}))
+    for lab_name in ("cooling", "motor"):          # a refreshed dashboard still shows the mistake that's open
+        if open_diag[lab_name]:
+            await ws.send_text(json.dumps({**open_diag[lab_name], "fix": pending_fix[lab_name]} if pending_fix[lab_name]
+                                          else {k: v for k, v in open_diag[lab_name].items() if k != "fix"}))
     if pending_fix["motor"]:
         await ws.send_text(json.dumps({"type": "fix_update", "lab": "motor", "fix": pending_fix["motor"]}))
     try:
