@@ -849,8 +849,8 @@ class CoolingWatcher:
 
     MIN_ABOVE_ROOM = 5.0      # below this the water is too close to room temperature to tell anything
     OFFSET_ALERT = 3.0        # degrees off the predicted curve
-    FAST_RATE = 0.25          # degrees per second; hot water never cools this fast, a probe in air does
-    RATE_FACTOR = 5.0         # ...or this many times faster than physics predicts
+    JUMP = 0.06               # degrees per second faster than the probe was cooling a moment ago...
+    RATE_FACTOR = 3.0         # ...and at least this many times faster
 
     def __init__(self):
         self.reset(None, None)
@@ -884,6 +884,17 @@ class CoolingWatcher:
             # wasn't sitting in the water for these readings, so don't trust a curve from them yet.
             self.k = max(raw, 0.0003) if raw < 0.03 else None
 
+    def baseline_rate(self, t):
+        """How fast the reading was changing 6 to 20 seconds ago (degrees per second), or None if unknown."""
+        pts = [(pt, v) for pt, v in self.recent if t - 20 <= pt <= t - 6]
+        if len(pts) < 8 or pts[0][0] < self.t0:
+            return None
+        n = len(pts)
+        mt = sum(p for p, _ in pts) / n
+        mv = sum(v for _, v in pts) / n
+        den = sum((p - mt) ** 2 for p, _ in pts)
+        return sum((p - mt) * (v - mv) for p, v in pts) / den if den else None
+
     def slope(self, n):
         """Degrees per second over the last n readings (least squares)."""
         pts = self.recent[-n:]
@@ -896,7 +907,7 @@ class CoolingWatcher:
 
     def add(self, t, temp):
         self.recent.append((t, temp))
-        del self.recent[:-10]
+        del self.recent[:-40]
 
         # A run starts at the hottest reading. While the probe is still heating up (just dropped in hot water,
         # or fresh water poured), keep moving the start forward so the cooling fit only sees cooling.
@@ -931,12 +942,18 @@ class CoolingWatcher:
         if not self.flagged:
             if exp is not None and hot_enough:
                 gap = exp - temp                                  # + means colder than physics says
-                physics_rate = self.k * max(exp - ROOM_TEMP, 0.1)   # how fast the water should be cooling now
-                too_fast = s is not None and -s > max(self.FAST_RATE, self.RATE_FACTOR * physics_rate)
-                self.fast_count = self.fast_count + 1 if too_fast and gap > 0.7 else 0
-                if self.fast_count >= 2:
+                # Compare the probe with itself: how fast was it cooling 6 to 20 seconds ago, while it sat in the
+                # water? A probe pulled into air suddenly cools several times faster. This works for warm and very
+                # hot water alike, because very hot water cools fast on its own and that's the baseline.
+                base = self.baseline_rate(t)
+                s5 = self.slope(5)
+                too_fast = (base is not None and s5 is not None
+                            and base <= 0.01                      # it was cooling or steady, not still warming up
+                            and s5 < base - self.JUMP and s5 < self.RATE_FACTOR * min(base, -0.005))
+                self.fast_count = self.fast_count + 1 if too_fast and gap > 0.3 else 0
+                if self.fast_count >= 3:
                     self.flag("low", t, exp, temp, "probe_fast",
-                              {"ratio": max(2, round(-s / max(physics_rate, 0.01))), "drop": round(gap, 1)})
+                              {"ratio": max(3, min(50, round(s5 / min(base, -0.005)))), "drop": round(gap, 1)})
                 elif settling:
                     pass                                          # still warming back up after going back in
                 elif gap >= self.OFFSET_ALERT:
@@ -953,9 +970,10 @@ class CoolingWatcher:
             return exp
         gap = abs(exp - temp)
         self.worst_gap = max(self.worst_gap, gap)
-        heading_back = s is not None and ((self.flagged == "low" and s > 0.25) or (self.flagged == "high" and s < -0.25))
+        heading_back = s is not None and ((self.flagged == "low" and s > 0.15) or (self.flagged == "high" and s < -0.15))
         self.rise_count = self.rise_count + 1 if heading_back else 0
-        still_falling = s is not None and s < -0.1
+        water_rate = (self.k or 0.001) * max(exp - ROOM_TEMP, 0.1)   # how fast the water itself cools right now
+        still_falling = s is not None and s < -max(0.04, 2 * water_rate)
         back_on_curve = gap < 1.5 and not still_falling
         if back_on_curve or (self.rise_count >= 2 and gap < 0.6 * self.worst_gap):
             self.flagged = None
@@ -974,6 +992,10 @@ class CoolingWatcher:
 cool_watch = CoolingWatcher()
 
 
+COOL_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs",
+                        time.strftime("cooling_%m%d_%H%M%S.csv"))
+
+
 def on_cooling_line(parts):
     # C,time_ms,temp_c
     try:
@@ -981,6 +1003,15 @@ def on_cooling_line(parts):
     except (ValueError, IndexError):
         return
     exp = cool_watch.add(t / 1000.0, temp)
+    try:                                   # every reading goes in backend/logs/, for tuning and the report
+        new = not os.path.exists(COOL_LOG)
+        os.makedirs(os.path.dirname(COOL_LOG), exist_ok=True)
+        with open(COOL_LOG, "a") as f:
+            if new:
+                f.write("time_s,temp_c,expected_c,flag\n")
+            f.write(f"{t / 1000:.1f},{temp:.2f},{'' if exp is None else round(exp, 2)},{cool_watch.flagged or ''}\n")
+    except OSError:
+        pass
     msg = {"lab": "cooling", "t": t, "temp": temp}
     if exp is not None:
         msg["expected"] = round(exp, 2)
