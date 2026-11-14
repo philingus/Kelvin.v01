@@ -1,35 +1,32 @@
-// Kelvin: MinSegMega V4.2 wheel speed controller
-// Board in Arduino IDE: "Arduino Mega or Mega 2560". Serial Monitor: 115200 baud, "Newline".
+// Kelvin: MinSegMega V4.2 wheel speed controller (PI/PID), for the robot on a stand.
+// Board: "Arduino Mega or Mega 2560". Serial Monitor: 115200 baud, "Newline".
+// Power: the robot's own batteries, Battery switch ON and Driver switch ON. Nothing else plugged in.
 //
-// Prints 50 times a second:   T,time_ms,target,speed,motor,tilt
-// Accepts (one per line):     K,kp,ki,kd      change controller settings
-//                             S,target        change target speed (0 = stop)
-// Lines starting with '#' are info for humans; the backend ignores them.
+// Prints 50 times a second:   T,time_ms,target_rpm,speed_rpm,motor_pwm,0
+// Accepts (one per line):     K,kp,ki,kd      new controller settings (Kelvin sends these)
+//                             S,rpm           new target speed in RPM (0 = stop)
 //
-// Pins from the MinSegMega V4.2 sheet. Motor 1 = M1A D44, M1B D45. Encoder 1 = D19, D18.
-// If the wheel spins the wrong way or speed reads negative, swap ENC_A and ENC_B.
+// Measured on our robot (Nov 14): motor port 1 = D44/D45, encoder 1 = D19/D18, forward counts DOWN,
+// full power ~130 RPM, and the motor needs ~40% power before it starts turning.
 
-const int M1A = 44;      // motor 1, PWM
-const int M1B = 45;      // motor 1, PWM
-const int ENC_A = 19;    // encoder 1, interrupt pin
-const int ENC_B = 18;    // encoder 1, interrupt pin
+const int M1A = 44, M1B = 45;        // motor port 1
+const int ENC_A = 19, ENC_B = 18;    // encoder 1 (both are interrupt pins)
+const int DIR = -1;                  // forward counts down on our robot, so flip the sign
+const float COUNTS_PER_REV = 720.0;  // both edges of both encoder channels
+const unsigned long LOOP_MS = 20;    // 50 Hz
+const int MAX_RPM = 120;             // refuse targets above this (full power is ~130)
 
-const unsigned long LOOP_MS = 20;   // 50 Hz
-const float SPEED_SCALE = 0.1;      // speed = encoder counts per second * 0.1, keeps numbers readable
+volatile long enc = 0;
+void onA() { if (digitalRead(ENC_A) == digitalRead(ENC_B)) enc++; else enc--; }
+void onB() { if (digitalRead(ENC_A) != digitalRead(ENC_B)) enc++; else enc--; }
 
-volatile long encCount = 0;
-
-float kp = 1.0, ki = 2.0, kd = 0.0; // starting settings, tune these
+float kp = 4.0, ki = 10.0, kd = 0.0;  // good settings; Kelvin overrides these when it connects
 float target = 0;
 float integral = 0, lastError = 0, speedFilt = 0;
 long lastCount = 0;
 unsigned long lastLoop = 0;
-String inLine = "";
-
-void onEncA() {
-  // quadrature: compare A and B to get direction
-  if (digitalRead(ENC_A) == digitalRead(ENC_B)) encCount++; else encCount--;
-}
+char line[48];
+int lineLen = 0;
 
 void setMotor(int pwm) {
   pwm = constrain(pwm, -255, 255);
@@ -44,23 +41,24 @@ void printSettings() {
   Serial.print(" target="); Serial.println(target, 1);
 }
 
-void handleLine(String s) {
-  s.trim();
-  if (s.length() < 2) return;
-  char cmd = s.charAt(0);
-  s = s.substring(2);                       // drop "K," or "S,"
-  if (cmd == 'K') {
-    int a = s.indexOf(','), b = s.indexOf(',', a + 1);
-    if (a < 0 || b < 0) { Serial.println("# bad K line, use K,kp,ki,kd"); return; }
-    kp = s.substring(0, a).toFloat();
-    ki = s.substring(a + 1, b).toFloat();
-    kd = s.substring(b + 1).toFloat();
-    integral = 0;                           // fresh start with new settings
+void handleLine(char *s) {
+  if (s[0] == 'K' && s[1] == ',') {
+    float a, b, c;
+    char *p = s + 2;
+    a = atof(p); p = strchr(p, ','); if (!p) { Serial.println("# bad K line, use K,kp,ki,kd"); return; }
+    b = atof(++p); p = strchr(p, ','); if (!p) { Serial.println("# bad K line, use K,kp,ki,kd"); return; }
+    c = atof(++p);
+    if (a < 0 || b < 0 || c < 0 || a > 200 || b > 200 || c > 20) { Serial.println("# K values out of range, ignored"); return; }
+    if (b > 0) integral = integral * ki / b;   // keep ki*integral the same so a gain change doesn't jolt the wheel
+    else integral = 0;
+    kp = a; ki = b; kd = c;
     printSettings();
-  } else if (cmd == 'S') {
-    target = s.toFloat();
+  } else if (s[0] == 'S' && s[1] == ',') {
+    float t = atof(s + 2);
+    if (t > MAX_RPM) t = MAX_RPM;
+    if (t < -MAX_RPM) t = -MAX_RPM;
+    target = t;
     if (target == 0) integral = 0;
-    printSettings();
   }
 }
 
@@ -68,19 +66,22 @@ void setup() {
   Serial.begin(115200);
   pinMode(M1A, OUTPUT); pinMode(M1B, OUTPUT);
   pinMode(ENC_A, INPUT_PULLUP); pinMode(ENC_B, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(ENC_A), onEncA, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_A), onA, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_B), onB, CHANGE);
   setMotor(0);
-  Serial.println("# Kelvin MinSeg speed controller ready");
+  Serial.println("# Kelvin MinSeg speed controller ready. Send S,60 to spin.");
   printSettings();
   lastLoop = millis();
 }
 
 void loop() {
-  // read commands without blocking
-  while (Serial.available()) {
+  while (Serial.available()) {           // read commands without blocking
     char c = Serial.read();
-    if (c == '\n' || c == '\r') { if (inLine.length()) handleLine(inLine); inLine = ""; }
-    else if (inLine.length() < 64) inLine += c;
+    if (c == '\n' || c == '\r') {
+      if (lineLen) { line[lineLen] = 0; handleLine(line); lineLen = 0; }
+    } else if (lineLen < (int)sizeof(line) - 1) {
+      line[lineLen++] = c;
+    }
   }
 
   unsigned long now = millis();
@@ -88,18 +89,19 @@ void loop() {
   float dt = (now - lastLoop) / 1000.0;
   lastLoop = now;
 
-  noInterrupts(); long count = encCount; interrupts();
-  float speed = (count - lastCount) / dt * SPEED_SCALE;
+  noInterrupts(); long count = enc; interrupts();
+  float rpm = DIR * (count - lastCount) / dt * 60.0 / COUNTS_PER_REV;
   lastCount = count;
-  speedFilt = 0.7 * speedFilt + 0.3 * speed;   // light smoothing
+  speedFilt = 0.7 * speedFilt + 0.3 * rpm;      // light smoothing of encoder steps
 
   float error = target - speedFilt;
   float deriv = (error - lastError) / dt;
   lastError = error;
 
   float out = kp * error + ki * integral + kd * deriv;
-  // only build up the integral when the motor isn't already maxed out (anti-windup)
-  if (out > -255 && out < 255) integral += error * dt;
+  // anti-windup: don't build the integral further while maxed out, but always let it unwind
+  if ((out < 255 || error < 0) && (out > -255 || error > 0)) integral += error * dt;
+  if (ki > 0) integral = constrain(integral, -255.0 / ki, 255.0 / ki);
   if (target == 0) { out = 0; integral = 0; }
   int pwm = (int)constrain(out, -255, 255);
   setMotor(pwm);
@@ -108,5 +110,5 @@ void loop() {
   Serial.print(","); Serial.print(target, 1);
   Serial.print(","); Serial.print(speedFilt, 1);
   Serial.print(","); Serial.print(pwm);
-  Serial.println(",0");                       // tilt not used yet
+  Serial.println(",0");
 }

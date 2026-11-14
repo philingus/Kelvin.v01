@@ -337,7 +337,7 @@ function onDiagnosis(d) {
     fixedTimer = setTimeout(() => { if (state[L] === "fixed") { state[L] = "stable"; render(); } }, 9000);
     fixes[L] = null;
   } else {
-    const SETTINGS_ISSUES = ["overshoot", "not_fixed", "slow", "steady_error", "saturated", "jitter"];
+    const SETTINGS_ISSUES = ["overshoot", "overshoot_kp", "not_fixed", "slow", "steady_error", "saturated", "jitter"];
     const prev = [...log].reverse().find(e => e.lab === L && e.result === "applied");
     if (prev && SETTINGS_ISSUES.includes(d.issue)) prev.result = "partial";   // drag or a loose probe isn't the fix's fault
     state[L] = "mistake";
@@ -351,9 +351,9 @@ function onDiagnosis(d) {
 }
 function shortWhat(d) {
   const m = (d.text || "").match(/\d+ (percent|degrees)/);
-  const names = { overshoot: "Wheel overshot its target", slow: "Wheel too slow to reach target", steady_error: "Wheel settled below target",
+  const names = { overshoot: "Wheel overshot its target", overshoot_kp: "Wheel overshot its target", slow: "Wheel too slow to reach target", steady_error: "Wheel settled below target",
                   saturated: "Motor maxed out", jitter: "Motor power jittering", probe_out: "Reading dropped off the curve", not_fixed: "Still overshooting",
-                  drag: "Something dragging on the wheel", probe_fast: "Reading fell too fast for cooling water",
+                  drag: "Something dragging on the wheel", drag_load: "Something loading the wheel", probe_fast: "Reading fell too fast for cooling water",
                   probe_high: "Reading rose above the curve" };
   return (names[d.issue] || "Something looks wrong") + (m ? " by " + m[0] : "");
 }
@@ -362,12 +362,13 @@ function shortMark(d) {
   if (d.issue === "probe_out") return "probe out? " + (m ? "-" + m[1] + "°" : "");
   if (d.issue === "probe_fast") return "probe out?";
   if (d.issue === "probe_high") return "too warm?";
-  if (d.issue === "overshoot" || d.issue === "not_fixed") return "overshot " + (m ? m[1] + "%" : "");
+  if (d.issue === "overshoot" || d.issue === "overshoot_kp" || d.issue === "not_fixed") return "overshot " + (m ? m[1] + "%" : "");
+  if (d.issue === "drag_load") return "load!";
   if (d.issue === "drag") return "drag! " + (m ? "-" + m[1] + "%" : "");
   return "look here";
 }
 const HAND = { probe_out: "Put the probe back in the water", probe_fast: "Put the probe back in the water",
-               probe_high: "Check what's touching the probe", drag: "Take whatever is touching the wheel off it" };
+               probe_high: "Check what's touching the probe", drag: "Take whatever is touching the wheel off it", drag_load: "Take whatever is touching the wheel off it" };
 const handFix = d => HAND[d.issue] || "Check the setup by hand";
 const fixText = f => Object.keys(f).map(k => k + " " + (+settings[k] || 0).toFixed(2) + " → " + (+f[k]).toFixed(2)).join(", ");
 
@@ -789,7 +790,7 @@ function render() {
   $("verdictText").textContent =
     st === "stable" ? L.stable :
     st === "mistake" ? (lab === "motor"
-      ? (lastIssue.motor === "drag" ? "Something physical is slowing the wheel. The settings are fine." : "Something is wrong with the student's controller. Kelvin found the cause below.")
+      ? (lastIssue.motor === "drag" || lastIssue.motor === "drag_load" ? "Something physical is slowing the wheel. The settings are fine." : "Something is wrong with the student's controller. Kelvin found the cause below.")
       : "A reading broke away from the physics. Kelvin found the cause below.") :
     st === "fixing" ? "The fix is on the robot. Kelvin is watching the next run." :
     "Kelvin's fix worked. Back on track.";

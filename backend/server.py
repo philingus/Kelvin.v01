@@ -46,7 +46,7 @@ if os.path.exists(_env):
 
 ROOM_TEMP = 22.0           # degrees C, set with --room-temp to the room's real temperature
 COOL_DROP_ALERT = 6.0      # degrees below expected that counts as a mistake
-OVERSHOOT_ALERT = 25.0     # percent overshoot that counts as a mistake
+OVERSHOOT_ALERT = 20.0     # percent overshoot that counts as a mistake (good settings on our MinSeg: ~2%)
 STUCK_SECONDS = 120        # tell the TA when a mistake stays unfixed this long
 
 # Photon (TA texting). Gissell's service listens here for events from Kelvin.
@@ -67,7 +67,7 @@ app = FastAPI(lifespan=lifespan)
 clients: set = set()
 loop: asyncio.AbstractEventLoop | None = None
 motor_link = None          # object with .write(str) for sending commands to the robot
-settings = {"kp": 1.0, "ki": 2.0, "kd": 0.0}
+settings = {"kp": 4.0, "ki": 10.0, "kd": 0.0}     # good settings for our MinSeg; --kp/--ki override
 
 
 # ---------------------------------------------------------------- broadcast
@@ -92,7 +92,10 @@ async def _safe_send(ws, text):
 
 TEMPLATES = {
     "overshoot": "The wheel overshot its target by {over} percent and kept oscillating. "
-                 "The first setting, kp, is too high for this motor. Lower it to about a third.",
+                 "The second setting, ki, is too high for kp: it keeps pushing after the wheel reaches speed. "
+                 "Lower ki from {old} to {new}.",
+    "overshoot_kp": "The wheel overshot its target by {over} percent and kept oscillating. "
+                    "The first setting, kp, is too high for this motor. Lower it to about a third.",
     "slow": "The wheel only reached {reach} percent of its target. The first setting, kp, is too low. Raise it by half.",
     "steady_error": "The wheel settled {err} percent below its target and stayed there. "
                     "Add some of the second setting, ki, to close the gap.",
@@ -100,7 +103,7 @@ TEMPLATES = {
                  "The settings are too aggressive, or the battery is low. Lower kp, and check the battery.",
     "jitter": "The motor power is jittering. The third setting, kd, is amplifying sensor noise. Lower it.",
     "fixed": "That worked. Overshoot went from {before} percent to {after} percent.",
-    "not_fixed": "Better, but still {after} percent overshoot. Let's cut kp in half again.",
+    "not_fixed": "Better, but still {after} percent overshoot. Let's cut {name} in half again.",
     "probe_out": "Your reading dropped {drop} degrees below where it should be. "
                  "The probe looks like it is out of the water.",
     "probe_fast": "The reading is falling {ratio} times faster than hot water can cool. "
@@ -111,6 +114,9 @@ TEMPLATES = {
     "drag": "Something is dragging on the wheel. Speed fell {drop} percent below target while motor power went up "
             "{power} percent to fight it. That's a physical problem, not your settings, so don't change the gains. "
             "Check for anything touching the wheel.",
+    "drag_load": "Something is loading the wheel. Speed held, but only because motor power jumped {power} percent. "
+                 "That's a physical problem, not your settings, so don't change the gains. "
+                 "Check for anything touching the wheel.",
     "drag_gone": "The drag is gone and the wheel is back on target. Your settings were fine the whole time.",
 }
 OK_ISSUES = ("fixed", "probe_back", "drag_gone")      # these turn the dashboard green
@@ -286,12 +292,12 @@ def stuck_watchdog():
 # Kelvin can act, not just talk. Every action goes through do_action(), which checks the numbers
 # before touching the robot, and Kelvin's spoken reply is written from what actually happened.
 
-SAFE = {"kp": (0.01, 20.0), "ki": (0.0, 20.0), "kd": (0.0, 5.0)}      # Kelvin applies these on its own
-HARD = {"kp": (0.001, 60.0), "ki": (0.0, 60.0), "kd": (0.0, 15.0)}    # past SAFE but inside HARD needs the TA's OK
+SAFE = {"kp": (0.01, 20.0), "ki": (0.0, 60.0), "kd": (0.0, 5.0)}      # Kelvin applies these on its own
+HARD = {"kp": (0.001, 60.0), "ki": (0.0, 200.0), "kd": (0.0, 15.0)}    # past SAFE but inside HARD needs the TA's OK
 pending_fix = {"motor": None, "cooling": None}   # the suggested fix waiting for "apply"
 open_diag = {"motor": None, "cooling": None}     # the mistake on screen right now, resent when a dashboard (re)connects
 undo_stack = []                                  # earlier settings, newest last
-stepper = {"low": 40.0, "high": 100.0, "on": True, "seconds": 4.0}
+stepper = {"low": 30.0, "high": 80.0, "on": True, "seconds": 4.0}   # RPM; our wheel tops out ~130
 MEASURE_WORDS = r"\b(half|third|quarter|double|twice|times|percent|more|less|lower|higher|bigger|smaller|bit)\b"
 
 
@@ -402,8 +408,8 @@ def do_action(a: dict, lab: str, source: str = "student") -> str:
             v = float(a.get("value"))
         except (TypeError, ValueError):
             return "I didn't catch the speed you want."
-        if not 5 <= v <= 200:
-            return f"{v:g} is outside the safe range of 5 to 200, so I left the speed alone."
+        if not 5 <= v <= 120:
+            return f"{v:g} is outside the safe range of 5 to 120 RPM, so I left the speed alone."
         stepper["high"], stepper["low"], stepper["on"] = v, round(v * 0.4, 1), True
         remember_event("motor", f"student set the target speed to step between {stepper['low']:g} and {v:g}")
         return f"Done. The wheel will now step between {stepper['low']:g} and {v:g}."
@@ -412,8 +418,8 @@ def do_action(a: dict, lab: str, source: str = "student") -> str:
             v = float(a.get("value"))
         except (TypeError, ValueError):
             return "I didn't catch the speed you want."
-        if not 5 <= v <= 200:
-            return f"{v:g} is outside the safe range of 5 to 200, so I left the speed alone."
+        if not 5 <= v <= 120:
+            return f"{v:g} is outside the safe range of 5 to 120 RPM, so I left the speed alone."
         stepper["high"] = stepper["low"] = v
         stepper["on"] = True
         if motor_link:
@@ -470,9 +476,12 @@ def quick_intent(q: str, lab: str = "", source: str = "student"):
         return {"type": "start"}
     rel = re.search(r"\b(third|half|quarter|double|twice)\b", s)
     if rel and re.search(r"\b(do|make|try|use|go with|let's|lets|set|change|instead|cut|drop|lower|raise|apply)\b", s):
-        base = (pending_fix["motor"] or {}).get("kp", settings["kp"])
+        waiting = pending_fix["motor"] or {}
+        named = re.search(r"\bk ?([pid])\b", s)            # "half of ki" names the setting
+        key = ("k" + named.group(1)) if named else (next(iter(waiting)) if waiting else "kp")
+        base = waiting.get(key, settings[key])
         factor = {"third": 1 / 3, "half": 0.5, "quarter": 0.25, "double": 2, "twice": 2}[rel.group(1)]
-        return {"type": "set_fix", "kp": round(base * factor, 3), "apply": bool(re.search(r"\bapply\b", s))}
+        return {"type": "set_fix", key: round(base * factor, 3), "apply": bool(re.search(r"\bapply\b", s))}
     m = re.search(r"\b(switch|go|change|move|show|open|take me)\b.*\b(cooling|cup|temperature|water|motor|wheel|robot)\b", s)
     if m and not measured:
         to = "cooling" if m.group(2) in ("cooling", "cup", "temperature", "water") else "motor"
@@ -672,7 +681,7 @@ def diagnose(lab: str, issue: str, facts: dict, fix: dict | None = None):
         if issue != "drag_gone":                       # drag was physical, so any gain fix still stands
             pending_fix[lab] = None
             session["fixed"] += 1
-        if ta["open_since"] and (issue != "drag_gone" or ta["open_issue"] == "drag"):
+        if ta["open_since"] and (issue != "drag_gone" or ta["open_issue"] in ("drag", "drag_load")):
             if ta["stuck_sent"]:
                 notify("resolved", f"{STATION} is back on track. {text}")
             ta.update(open_since=None, open_issue="", open_what="", stuck_sent=False, failed_fixes=0)
@@ -746,7 +755,8 @@ class MotorWatcher:
             return
         err = (self.target - speed) / abs(self.target) * (1 if self.target > 0 else -1)   # + means too slow
         if self.in_drag:
-            self.recover_count = self.recover_count + 1 if abs(err) < 0.08 else 0
+            easy = abs(motor) - self.base_motor < max(20.0, 0.10 * self.base_motor)
+            self.recover_count = self.recover_count + 1 if abs(err) < 0.08 and easy else 0
             if self.recover_count >= 25:                 # back on target for half a second
                 self.in_drag = False
                 self.settled, self.settle_count = True, 25
@@ -759,7 +769,8 @@ class MotorWatcher:
                 self.base_motor = statistics.mean(abs(m) for _, m in self.samples[-25:])
             return
         rise = abs(motor) - self.base_motor
-        if err > 0.20 and rise >= max(15.0, 0.15 * self.base_motor):
+        loaded = rise >= max(40.0, 0.20 * self.base_motor)   # holding speed, but only by pushing 20%+ harder
+        if (err > 0.20 or loaded) and rise >= max(15.0, 0.15 * self.base_motor):
             self.drag_count += 1
         else:
             self.drag_count = 0
@@ -768,7 +779,10 @@ class MotorWatcher:
         if self.drag_count >= 15:                        # slowed and fighting for 0.3 seconds
             self.in_drag, self.disturbed, self.recover_count = True, True, 0
             power = round(rise / max(self.base_motor, 1.0) * 100)
-            diagnose("motor", "drag", {"drop": round(err * 100), "power": power})
+            if err > 0.10:
+                diagnose("motor", "drag", {"drop": round(err * 100), "power": power})
+            else:
+                diagnose("motor", "drag_load", {"power": power})
 
     def finish(self):
         if self.skip_next:
@@ -792,14 +806,17 @@ class MotorWatcher:
         diffs = [abs(motors[i] - motors[i - 1]) for i in range(1, len(motors))]
         jitter = statistics.mean(diffs) if diffs else 0
 
+        if self.verify and sign < 0:
+            return                                       # this motor coasts down without overshoot; judge the next speed-up
         if self.verify:
             self.verify = False
             if over < OVERSHOOT_ALERT:
                 diagnose("motor", "fixed", {"before": self.last_over, "after": over})
                 self.flagged = False
             else:
-                diagnose("motor", "not_fixed", {"after": over},
-                         {"kp": round(settings["kp"] * 0.5, 3)})
+                key = "ki" if settings["ki"] >= 1 else "kp"
+                diagnose("motor", "not_fixed", {"after": over, "name": key},
+                         {key: round(settings[key] * 0.5, 3)})
             self.last_over = over
             return
 
@@ -808,7 +825,12 @@ class MotorWatcher:
             return
         issue, facts, fix = None, {}, None
         if over >= OVERSHOOT_ALERT:
-            issue, facts, fix = "overshoot", {"over": over}, {"kp": round(settings["kp"] * 0.35, 3)}
+            if settings["ki"] >= 1:     # with integral action, overshoot on this motor comes from ki (we measured it)
+                # On our MinSeg, ki at about 3x kp settles with ~2% overshoot at every motor speed we simulated.
+                new_ki = round(max(0.5, min(settings["ki"] / 3, settings["kp"] * 3)), 2)
+                issue, facts, fix = "overshoot", {"over": over, "old": f"{settings['ki']:g}", "new": f"{new_ki:g}"}, {"ki": new_ki}
+            else:
+                issue, facts, fix = "overshoot_kp", {"over": over}, {"kp": round(settings["kp"] * 0.35, 3)}
         elif sat >= 60:
             issue, facts, fix = "saturated", {"sat": sat}, {"kp": round(settings["kp"] * 0.66, 3)}
         elif reach < 85:
@@ -1062,34 +1084,61 @@ class SerialLink:
 # ---------------------------------------------------------------- fake boards
 
 class FakeMotor:
-    """Behaves like the MinSeg speed sketch: same output lines, same K and S commands."""
+    """Behaves like our real MinSeg running minseg_speed.ino: same PI controller on board, same output lines,
+    same K and S commands. Plant measured Nov 14: full power ~130 RPM, needs ~95/255 power to start turning."""
+
+    DEAD, TOP, TAU, CPR = 95, 130.0, 0.12, 720
 
     def __init__(self):
         self.kp, self.ki, self.kd = settings["kp"], settings["ki"], settings["kd"]
-        self.target, self.speed, self.vel = 40.0, 0.0, 0.0
+        self.target = 0.0
+        self.w = 0.0            # true wheel speed, RPM
+        self.count = 0.0        # encoder counts
         self.brake = False
+        self.integral = 0.0
         threading.Thread(target=self.run, daemon=True).start()
 
     def write(self, text):
         p = text.strip().split(",")
-        if p[0] == "K" and len(p) == 4:
-            self.kp, self.ki, self.kd = float(p[1]), float(p[2]), float(p[3])
-        elif p[0] == "S" and len(p) == 2:
-            self.target = float(p[1])
+        try:
+            if p[0] == "K" and len(p) == 4:
+                ki = float(p[2])
+                self.integral = self.integral * self.ki / ki if ki > 0 else 0.0   # same as the firmware
+                self.kp, self.ki, self.kd = float(p[1]), ki, float(p[3])
+            elif p[0] == "S" and len(p) == 2:
+                self.target = max(-120.0, min(120.0, float(p[1])))
+                if self.target == 0:
+                    self.integral = 0.0
+        except ValueError:
+            pass
 
     def run(self):
         t0 = time.time()
+        last_err, filt, last_count = 0.0, 0.0, 0
         while True:
             time.sleep(0.02)
-            wn, zeta = 7.0, max(0.08, min(1.0, 1.0 / max(self.kp, 0.01)))
-            self.vel += (wn * wn * (self.target - self.speed) - 2 * zeta * wn * self.vel) * 0.02
-            self.speed += self.vel * 0.02
-            if self.brake:                 # type 'brake' in the terminal: like pressing an eraser on the wheel
-                self.vel -= 30.0 * self.speed * 0.02
-            sp = self.speed + random.uniform(-0.4, 0.4)
-            effort = 4.0 * (self.target - self.speed) if self.brake else 0.0   # the controller fighting back
-            motor = max(-255, min(255, sp * 2 + self.vel * 0.4 + effort))
-            on_line(f"T,{int((time.time() - t0) * 1000)},{self.target:.1f},{sp:.1f},{motor:.0f},0")
+            dt = 0.02
+            c = int(self.count)
+            filt = 0.7 * filt + 0.3 * ((c - last_count) / dt * 60 / self.CPR)
+            last_count = c
+            err = self.target - filt
+            der = (err - last_err) / dt
+            last_err = err
+            out = self.kp * err + self.ki * self.integral + self.kd * der
+            if (out < 255 or err < 0) and (out > -255 or err > 0):
+                self.integral += err * dt
+            if self.ki > 0:
+                self.integral = max(-255 / self.ki, min(255 / self.ki, self.integral))
+            if self.target == 0:
+                out, self.integral = 0, 0.0
+            pwm = int(max(-255, min(255, out)))
+            for _ in range(20):                       # motor physics in 1 ms steps
+                eff = 0.0 if abs(pwm) < self.DEAD else math.copysign((abs(pwm) - self.DEAD) * self.TOP / (255 - self.DEAD), pwm)
+                if self.brake:                        # type 'brake': like pressing an eraser on the wheel
+                    eff -= math.copysign(min(abs(eff), 45.0), self.w) if self.w else 0.0
+                self.w += (eff - self.w) * (0.001 / self.TAU)
+                self.count += self.w / 60 * self.CPR * 0.001
+            on_line(f"T,{int((time.time() - t0) * 1000)},{self.target:.1f},{filt:.1f},{pwm},0")
 
 
 class FakeCooling:
@@ -1232,8 +1281,8 @@ def main():
     ap.add_argument("--kp", type=float, default=settings["kp"])
     ap.add_argument("--ki", type=float, default=settings["ki"])
     ap.add_argument("--kd", type=float, default=settings["kd"])
-    ap.add_argument("--low", type=float, default=40, help="low target speed for the step test")
-    ap.add_argument("--high", type=float, default=100, help="high target speed for the step test")
+    ap.add_argument("--low", type=float, default=30, help="low target speed (RPM) for the step test")
+    ap.add_argument("--high", type=float, default=80, help="high target speed (RPM) for the step test")
     ap.add_argument("--step-seconds", type=float, default=4, help="seconds between target changes")
     ap.add_argument("--room-temp", type=float, default=ROOM_TEMP, help="room temperature in C, for the cooling lab")
     ap.add_argument("--station", default=STATION, help='name the TA sees in texts, e.g. "Station 3"')
@@ -1251,6 +1300,12 @@ def main():
     else:
         if args.motor_port:
             motor_link = SerialLink(args.motor_port)
+
+            def send_settings_after_boot():
+                time.sleep(2.5)          # the Mega restarts when the port opens; wait for it, then load our settings
+                motor_link.write(f"K,{settings['kp']},{settings['ki']},{settings['kd']}")
+                print(f"Sent settings to the robot: kp {settings['kp']:g}, ki {settings['ki']:g}, kd {settings['kd']:g}")
+            threading.Thread(target=send_settings_after_boot, daemon=True).start()
         if args.cooling_port:
             SerialLink(args.cooling_port)
 
@@ -1269,11 +1324,11 @@ def main():
                 threading.Thread(target=lambda q=cmd[3:]: print("[reply to TA]", handle_voice(q, "", "ta")),
                                  daemon=True).start()
             elif cmd == "bad" and motor_link:
-                settings.update(kp=6.0)
+                settings.update(kp=1.0, ki=40.0, kd=0.0)
                 motor_link.write(f"K,{settings['kp']},{settings['ki']},{settings['kd']}")
                 motor_watch.flagged = False
                 send({"type": "settings", **settings})
-                print("Loaded a bad controller (kp=6)")
+                print("Loaded a bad controller (kp=1, ki=40): the wheel will overshoot ~40% on each speed-up")
             elif cmd in ("out", "in") and cooling:
                 cooling.out = cmd == "out"
             elif cmd in ("stop", "start"):
