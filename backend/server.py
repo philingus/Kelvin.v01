@@ -103,7 +103,11 @@ TEMPLATES = {
     "not_fixed": "Better, but still {after} percent overshoot. Let's cut kp in half again.",
     "probe_out": "Your reading dropped {drop} degrees below where it should be. "
                  "The probe looks like it is out of the water.",
-    "probe_back": "The probe is back and the readings match again. I logged the mistake for the report.",
+    "probe_fast": "The reading is falling {ratio} times faster than hot water can cool. "
+                  "The probe looks like it is out of the water, or in something colder. Put it back in the cup.",
+    "probe_high": "Your reading is {rise} degrees above where the cooling water should be. "
+                  "Something warmer is touching the probe, or it moved into different water.",
+    "probe_back": "The probe is back and the readings are heading back to the curve. I logged the mistake for the report.",
     "drag": "Something is dragging on the wheel. Speed fell {drop} percent below target while motor power went up "
             "{power} percent to fight it. That's a physical problem, not your settings, so don't change the gains. "
             "Check for anything touching the wheel.",
@@ -836,14 +840,30 @@ def on_motor_line(parts):
 # ---------------------------------------------------------------- cooling analysis
 
 class CoolingWatcher:
-    """Fits Newton's law of cooling to good readings and flags readings that break from it."""
+    """Fits Newton's law of cooling to the readings and flags readings that break from it.
+
+    Two checks, so a mistake is caught in seconds instead of half a minute:
+      rate:   the reading falls far faster than hot water can cool (probe pulled into air, or into colder water)
+      offset: the reading sits well below or above the curve physics predicts
+    Recovery is quick too: as soon as the reading climbs back toward the curve, the probe is back."""
+
+    MIN_ABOVE_ROOM = 5.0      # below this the water is too close to room temperature to tell anything
+    OFFSET_ALERT = 3.0        # degrees off the predicted curve
+    FAST_RATE = 0.25          # degrees per second; hot water never cools this fast, a probe in air does
+    RATE_FACTOR = 5.0         # ...or this many times faster than physics predicts
 
     def __init__(self):
-        self.t0 = None
-        self.temp0 = None
-        self.k = None
+        self.reset(None, None)
+
+    def reset(self, t, temp):
+        self.t0, self.temp0, self.k = t, temp, None
         self.good = []             # (seconds, temp) used for the fit
-        self.flagged = False
+        self.recent = []           # last few (seconds, temp), for the rate checks
+        self.flagged = None        # None, "low" or "high"
+        self.fast_count = 0
+        self.rise_count = 0
+        self.worst_gap = 0.0
+        self.settling_until = None  # after the probe goes back in, it lags below the curve for a while; don't nag
 
     def expected(self, t):
         if self.k is None:
@@ -852,33 +872,103 @@ class CoolingWatcher:
 
     def fit(self):
         pts = [(t - self.t0, math.log(temp - ROOM_TEMP)) for t, temp in self.good if temp - ROOM_TEMP > 0.5]
-        if len(pts) < 8:
+        if len(pts) < 8 or self.temp0 - ROOM_TEMP <= 0.5:
             return
-        # least squares slope through ln(T - room) against time, anchored at the first reading
+        # least squares slope through ln(T - room) against time, anchored at the run's starting reading
         y0 = math.log(self.temp0 - ROOM_TEMP)
         num = sum(t * (y0 - y) for t, y in pts)
         den = sum(t * t for t, _ in pts)
-        if den > 0 and num > 0:
-            self.k = num / den
+        if den > 0:
+            raw = num / den
+            # Real cups of water cool slowly (k well under 0.03 per second, even the fast fake cup). Anything faster means the probe
+            # wasn't sitting in the water for these readings, so don't trust a curve from them yet.
+            self.k = max(raw, 0.0003) if raw < 0.03 else None
+
+    def slope(self, n):
+        """Degrees per second over the last n readings (least squares)."""
+        pts = self.recent[-n:]
+        if len(pts) < n:
+            return None
+        mt = sum(t for t, _ in pts) / n
+        mv = sum(v for _, v in pts) / n
+        den = sum((t - mt) ** 2 for t, _ in pts)
+        return sum((t - mt) * (v - mv) for t, v in pts) / den if den else None
 
     def add(self, t, temp):
-        # A run starts at the hottest reading. While the probe is still heating up (just dropped in hot
-        # water, or fresh water poured), keep moving the start forward so the cooling fit only sees cooling.
-        if self.t0 is None or temp > self.temp0 + 0.5:
+        self.recent.append((t, temp))
+        del self.recent[:-10]
+
+        # A run starts at the hottest reading. While the probe is still heating up (just dropped in hot water,
+        # or fresh water poured), keep moving the start forward so the cooling fit only sees cooling.
+        if self.t0 is None or (not self.flagged and temp > self.temp0 + 0.5) or temp > self.temp0 + 3.0:
             if self.flagged:
                 diagnose("cooling", "probe_back", {})
-            self.t0, self.temp0, self.k, self.good, self.flagged = t, temp, None, [], False
+            recent = self.recent
+            self.reset(t, temp)
+            self.recent = recent
+            return None
+
         exp = self.expected(t)
-        if exp is not None and exp - temp > COOL_DROP_ALERT and not self.flagged:
-            self.flagged = True
-            diagnose("cooling", "probe_out", {"drop": round(exp - temp)})
-        elif self.flagged and exp is not None and abs(exp - temp) < 1.5:
-            self.flagged = False
-            diagnose("cooling", "probe_back", {})
+        hot_enough = self.temp0 - ROOM_TEMP >= self.MIN_ABOVE_ROOM
+        s = self.slope(4)
+
+        settling = self.settling_until is not None
+        if settling and exp is not None and abs(exp - temp) < 1.5:
+            self.settling_until, settling = None, False           # back on the curve
+        elif settling and (t >= self.settling_until or (s is not None and abs(s) < 0.08 and t >= self.settling_until - 35)):
+            # The probe has warmed back up and leveled off, but it's not quite on the old curve (the water cooled
+            # while the probe was out). Start a fresh curve from here, keeping the cooling rate we already learned.
+            self.t0, self.temp0, self.good = t, temp, []
+            self.settling_until, settling = None, False
+            exp = self.expected(t)
+
+        if not self.flagged and exp is None and s is not None and abs(s) > 0.3:
+            # No curve yet and the reading is changing fast: the probe isn't sitting in the water (pulled out early,
+            # or still warming up). Throw away what we collected and start the curve once it's calm.
+            self.t0, self.temp0, self.good = t, temp, []
+            return None
+
         if not self.flagged:
-            self.good.append((t, temp))
-            self.fit()
+            if exp is not None and hot_enough:
+                gap = exp - temp                                  # + means colder than physics says
+                physics_rate = self.k * max(exp - ROOM_TEMP, 0.1)   # how fast the water should be cooling now
+                too_fast = s is not None and -s > max(self.FAST_RATE, self.RATE_FACTOR * physics_rate)
+                self.fast_count = self.fast_count + 1 if too_fast and gap > 0.7 else 0
+                if self.fast_count >= 2:
+                    self.flag("low", t, exp, temp, "probe_fast",
+                              {"ratio": max(2, round(-s / max(physics_rate, 0.01))), "drop": round(gap, 1)})
+                elif settling:
+                    pass                                          # still warming back up after going back in
+                elif gap >= self.OFFSET_ALERT:
+                    self.flag("low", t, exp, temp, "probe_out", {"drop": round(gap)})
+                elif -gap >= self.OFFSET_ALERT and s is not None and s < 0.1:   # only once it has stopped climbing
+                    self.flag("high", t, exp, temp, "probe_high", {"rise": round(-gap)})
+            if not self.flagged and not settling and (exp is None or abs(exp - temp) < 1.5):
+                self.good.append((t, temp))
+                self.fit()
+            return exp
+
+        # flagged: watch for the probe going back in
+        if exp is None:
+            return exp
+        gap = abs(exp - temp)
+        self.worst_gap = max(self.worst_gap, gap)
+        heading_back = s is not None and ((self.flagged == "low" and s > 0.25) or (self.flagged == "high" and s < -0.25))
+        self.rise_count = self.rise_count + 1 if heading_back else 0
+        still_falling = s is not None and s < -0.1
+        back_on_curve = gap < 1.5 and not still_falling
+        if back_on_curve or (self.rise_count >= 2 and gap < 0.6 * self.worst_gap):
+            self.flagged = None
+            self.fast_count = self.rise_count = 0
+            self.settling_until = None if back_on_curve else t + 60
+            diagnose("cooling", "probe_back", {})
         return exp
+
+    def flag(self, side, t, exp, temp, issue, facts):
+        self.flagged = side
+        self.worst_gap = abs(exp - temp)
+        self.fast_count = self.rise_count = 0
+        diagnose("cooling", issue, facts)
 
 
 cool_watch = CoolingWatcher()
@@ -983,7 +1073,7 @@ class FakeCooling:
         while True:
             time.sleep(1)
             t = time.time() - t0
-            truth = ROOM_TEMP + (80 - ROOM_TEMP) * math.exp(-0.012 * t)
+            truth = ROOM_TEMP + (80 - ROOM_TEMP) * math.exp(-0.003 * t)   # a mug, sped up a little
             cur += (ROOM_TEMP - cur) * 0.35 if self.out else (truth - cur) * 0.6
             on_line(f"C,{int(t * 1000)},{cur + random.uniform(-0.15, 0.15):.2f}")
 
