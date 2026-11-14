@@ -154,7 +154,17 @@ $("applyBtn").onclick = () => {
 // ---------- websocket with auto-reconnect ----------
 function connect() {
   try { ws = new WebSocket(WS_URL); } catch (e) { return setTimeout(connect, 2000); }
-  ws.onopen = () => { live = true; series.motor.length = 0; series.cooling.length = 0; renderConn(); };
+  ws.onopen = () => {
+    live = true;
+    series.motor.length = 0; series.cooling.length = 0;
+    latest = { motor: {}, cooling: {} };
+    mistakes = { motor: 0, cooling: 0 };
+    pendingFix = null;
+    $("fixRow").style.display = "none";
+    $("diag").className = "diag"; $("diagText").textContent = "Connected. Watching the experiment.";
+    $("status").className = "pill ok"; $("status").textContent = "Monitoring";
+    renderConn();
+  };
   ws.onmessage = ev => { try { handle(JSON.parse(ev.data)); } catch (e) {} };
   ws.onclose = () => { live = false; renderConn(); setTimeout(connect, 2000); };
   ws.onerror = () => { try { ws.close(); } catch (e) {} };
