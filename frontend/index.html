@@ -3,187 +3,315 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kelvin</title>
+<title>Kelvin · Lab notebook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700;9..144,900&family=Caveat:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --ink:#f2f4f8; --muted:#9aa3b2;
-          --blue:#4c9aff; --gray:#8b93a1; --red:#ff5c5c; --green:#3ddc97; --amber:#ffb84d; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
-  .wrap { max-width:1100px; margin:0 auto; padding:20px; }
-  header { display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:16px; }
-  h1 { font-size:30px; margin:0; letter-spacing:.5px; }
-  .tag { color:var(--muted); font-size:15px; flex:1; min-width:200px; }
-  select, button { font:inherit; font-size:16px; color:var(--ink); background:var(--panel); border:1px solid var(--line);
-                   border-radius:10px; padding:10px 14px; cursor:pointer; }
-  button:hover, select:hover { border-color:var(--muted); }
-  button.primary { background:var(--blue); border-color:var(--blue); color:#06121f; font-weight:600; }
-  button:disabled { opacity:.4; cursor:not-allowed; }
-  .pill { font-size:14px; padding:6px 12px; border-radius:999px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
-  .pill.ok { color:var(--green); border-color:var(--green); }
-  .pill.bad { color:var(--red); border-color:var(--red); }
-  .pill.demo { color:var(--amber); border-color:var(--amber); }
-  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:12px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
-  .card .k { color:var(--muted); font-size:14px; }
-  .card .v { font-size:30px; font-weight:600; margin-top:4px; font-variant-numeric:tabular-nums; }
-  .chartbox { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:12px; }
-  .legend { display:flex; gap:18px; font-size:14px; color:var(--muted); padding:2px 6px 8px; }
-  .sw { display:inline-block; width:18px; height:3px; vertical-align:middle; margin-right:6px; border-radius:2px; }
-  canvas { width:100%; height:320px; display:block; }
-  .diag { margin-top:12px; background:var(--panel); border:2px solid var(--line); border-radius:14px; padding:18px 20px; }
-  .diag.bad { border-color:var(--red); }
-  .diag.ok { border-color:var(--green); }
-  .diag .title { font-size:14px; color:var(--muted); text-transform:none; margin-bottom:6px; }
-  .diag .text { font-size:24px; line-height:1.35; }
-  .fix { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-top:14px; }
-  .fix .vals { font-size:17px; color:var(--muted); font-variant-numeric:tabular-nums; }
-  .fix .vals b { color:var(--ink); }
-  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px; }
-  .hint { color:var(--muted); font-size:14px; }
-  label.chk { color:var(--muted); font-size:15px; display:flex; gap:6px; align-items:center; cursor:pointer; }
+  :root {
+    --paper: #f6f1e4; --paper-deep: #efe7d3; --rule: #d9cfb6; --grid: rgba(70, 110, 160, .10);
+    --ink: #1d2a44; --ink-soft: #55607a; --pencil: #8a8471;
+    --blue: #2457a6; --red: #c0392b; --red-bg: #f7dcd4; --green: #2f7d4f; --green-bg: #dcefdc;
+    --amber: #b9770e; --amber-bg: #f8ead0; --margin: #e08b8b;
+    --serif: "Fraunces", Georgia, "Times New Roman", serif;
+    --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --hand: "Caveat", "Segoe Print", "Comic Sans MS", cursive;
+    --mono: "IBM Plex Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    color: var(--ink); font-family: var(--sans); font-size: 17px;
+    background-color: var(--paper);
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+  .page { max-width: 1180px; margin: 0 auto; padding: 22px 28px 40px 64px; position: relative; }
+  .page::before { content: ""; position: absolute; left: 36px; top: 0; bottom: 0; width: 2px; background: var(--margin); opacity: .55; }
+
+  /* header */
+  header { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; border-bottom: 2px solid var(--ink); padding-bottom: 12px; }
+  .brand h1 { font-family: var(--serif); font-weight: 900; font-size: 54px; line-height: .9; margin: 0; letter-spacing: -1px; }
+  .brand .sub { font-family: var(--hand); font-size: 26px; color: var(--blue); margin-top: 2px; transform: rotate(-1deg); display: inline-block; }
+  .spacer { flex: 1; }
+  .conn { font-family: var(--mono); font-size: 13px; color: var(--ink-soft); display: flex; align-items: center; gap: 8px; padding-bottom: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 3px var(--amber-bg); }
+  .dot.live { background: var(--green); box-shadow: 0 0 0 3px var(--green-bg); }
+
+  /* notebook tabs */
+  .tabs { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+  .tab { font: 600 16px var(--sans); color: var(--ink-soft); background: var(--paper-deep); border: 1.5px solid var(--rule);
+         border-bottom: none; border-radius: 10px 10px 0 0; padding: 9px 18px; cursor: pointer; }
+  .tab.on { background: #fffdf6; color: var(--ink); border-color: var(--ink); position: relative; top: 1.5px; }
+  .sheet { background: #fffdf6; border: 1.5px solid var(--ink); border-radius: 0 12px 12px 12px; padding: 22px 24px 24px; }
+  .explain { font-size: 18px; color: var(--ink-soft); margin: 0 0 18px; }
+  .explain b { color: var(--ink); font-weight: 600; }
+
+  /* verdict banner */
+  .verdict { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 22px;
+             border: 2.5px solid var(--green); background: var(--green-bg); border-radius: 14px; padding: 16px 22px; transition: background .3s, border-color .3s; }
+  .stamp { font-family: var(--serif); font-weight: 900; font-size: 34px; letter-spacing: 3px; color: var(--green);
+           border: 4px solid currentColor; border-radius: 8px; padding: 4px 16px; transform: rotate(-4deg); white-space: nowrap;
+           text-transform: uppercase; }
+  .verdict .what { font-family: var(--serif); font-size: 25px; font-weight: 500; line-height: 1.25; }
+  .verdict .count { text-align: center; font-family: var(--sans); }
+  .verdict .count b { display: block; font-family: var(--serif); font-size: 40px; line-height: 1; }
+  .verdict .count span { font-size: 13px; color: var(--ink-soft); }
+  .verdict.mistake { border-color: var(--red); background: var(--red-bg); } .verdict.mistake .stamp { color: var(--red); animation: thunk .35s ease-out; }
+  .verdict.fixing { border-color: var(--amber); background: var(--amber-bg); } .verdict.fixing .stamp { color: var(--amber); }
+  .verdict.fixed .stamp { animation: thunk .35s ease-out; }
+  @keyframes thunk { 0% { transform: rotate(-4deg) scale(1.6); opacity: 0; } 70% { transform: rotate(-4deg) scale(.95); opacity: 1; } 100% { transform: rotate(-4deg) scale(1); } }
+
+  /* readings */
+  .readings { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 18px 0; }
+  .reading { border-top: 2px solid var(--ink); padding-top: 8px; }
+  .reading .k { font-size: 14px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 1px; }
+  .reading .v { font-family: var(--serif); font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .reading .v small { font-size: 20px; color: var(--ink-soft); font-weight: 500; }
+  .reading .hint { font-family: var(--hand); font-size: 21px; color: var(--blue); line-height: 1; }
+
+  /* chart */
+  .chart { position: relative; border: 1.5px solid var(--rule); border-radius: 10px; background: rgba(255,255,255,.55); padding: 10px 10px 4px; }
+  .legend { display: flex; gap: 22px; font-size: 15px; color: var(--ink-soft); padding: 2px 8px 6px; flex-wrap: wrap; }
+  .key { display: inline-block; width: 26px; height: 0; border-top: 3px solid var(--blue); vertical-align: middle; margin-right: 8px; }
+  .key.target { border-top: 2.5px dashed var(--pencil); }
+  canvas { width: 100%; height: 300px; display: block; }
+
+  /* kelvin's note + fix */
+  .row2 { display: grid; grid-template-columns: 1.35fr 1fr; gap: 18px; margin-top: 18px; }
+  .note { position: relative; background: #fff8d8; border: 1.5px solid #e2cf7d; border-radius: 4px 14px 14px 14px; padding: 18px 20px 18px;
+          box-shadow: 3px 4px 0 rgba(29, 42, 68, .08); }
+  .note .who { font-family: var(--hand); font-size: 26px; color: var(--blue); line-height: 1; margin-bottom: 6px; }
+  .note .said { font-family: var(--serif); font-size: 23px; line-height: 1.35; }
+  .rx { border: 1.5px dashed var(--ink); border-radius: 14px; padding: 16px 20px; display: flex; flex-direction: column; justify-content: space-between; gap: 12px; }
+  .rx h3 { margin: 0; font-family: var(--serif); font-size: 20px; }
+  .rx .change { font-family: var(--mono); font-size: 20px; }
+  .rx .change .old { text-decoration: line-through; color: var(--pencil); }
+  .rx .change .arrow { color: var(--ink-soft); padding: 0 6px; }
+  .rx .change .new { color: var(--green); font-weight: 600; }
+  .rx .empty { color: var(--ink-soft); font-size: 16px; }
+  .rx .settings { font-size: 14px; color: var(--ink-soft); font-family: var(--mono); }
+  button { font: 600 16px var(--sans); cursor: pointer; border-radius: 10px; }
+  .apply { background: var(--ink); color: #fffdf6; border: 2px solid var(--ink); padding: 12px 18px; font-size: 18px; }
+  .apply:hover { background: #2b3c60; }
+  .apply:disabled { opacity: .35; cursor: not-allowed; }
+
+  /* lab log */
+  .log { margin-top: 24px; }
+  .log h2 { font-family: var(--serif); font-size: 28px; margin: 0 0 4px; display: flex; align-items: baseline; gap: 12px; }
+  .log h2 span { font-family: var(--hand); font-size: 22px; color: var(--blue); font-weight: 500; }
+  table { width: 100%; border-collapse: collapse; font-size: 16px; }
+  th { text-align: left; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-soft); font-weight: 600; padding: 8px 10px; border-bottom: 2px solid var(--ink); }
+  td { padding: 11px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  td.time { font-family: var(--mono); font-size: 14px; color: var(--ink-soft); white-space: nowrap; }
+  .chip { display: inline-block; font-weight: 600; font-size: 13px; padding: 3px 10px; border-radius: 999px; border: 1.5px solid; white-space: nowrap; }
+  .chip.open { color: var(--red); background: var(--red-bg); }
+  .chip.applied { color: var(--amber); background: var(--amber-bg); }
+  .chip.fixed { color: var(--green); background: var(--green-bg); }
+  .chip.partial { color: var(--amber); background: var(--amber-bg); }
+  .emptylog { font-family: var(--hand); font-size: 24px; color: var(--pencil); padding: 14px 10px; }
+
+  /* footer controls */
+  .foot { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; margin-top: 18px; font-size: 15px; color: var(--ink-soft); }
+  .foot label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  .demo { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .demo button { background: transparent; border: 1.5px solid var(--ink-soft); color: var(--ink); padding: 8px 14px; }
+
+  @media (max-width: 860px) {
+    .page { padding-left: 22px; } .page::before { display: none; }
+    .verdict { grid-template-columns: 1fr; text-align: left; }
+    .readings, .row2 { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="page">
   <header>
-    <h1>Kelvin</h1>
-    <div class="tag">Catches lab mistakes while the experiment is still running</div>
-    <select id="lab" aria-label="Lab">
-      <option value="motor">Motor control</option>
-      <option value="cooling">Cooling experiment</option>
-    </select>
-    <span id="conn" class="pill demo">Demo data</span>
-    <span id="status" class="pill ok">Monitoring</span>
+    <div class="brand">
+      <h1>Kelvin</h1>
+      <div class="sub">your lab partner, catching mistakes as they happen</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="conn"><span class="dot" id="dot"></span><span id="connText">demo data (no backend)</span></div>
   </header>
 
-  <div class="cards" id="cards"></div>
-
-  <div class="chartbox">
-    <div class="legend" id="legend"></div>
-    <canvas id="chart"></canvas>
+  <div class="tabs" role="tablist">
+    <button class="tab on" data-lab="motor" role="tab">Motor control lab</button>
+    <button class="tab" data-lab="cooling" role="tab">Cooling lab</button>
   </div>
 
-  <div class="diag" id="diag">
-    <div class="title">Kelvin says</div>
-    <div class="text" id="diagText">Everything matches so far.</div>
-    <div class="fix" id="fixRow" style="display:none">
-      <div class="vals" id="fixVals"></div>
-      <button class="primary" id="applyBtn">Apply fix</button>
+  <div class="sheet">
+    <p class="explain" id="explain"></p>
+
+    <div class="verdict" id="verdict">
+      <div class="stamp" id="stamp">Stable</div>
+      <div class="what" id="verdictText">Everything matches what physics predicts.</div>
+      <div class="count"><b id="caught">0</b><span>mistakes caught</span></div>
     </div>
-  </div>
 
-  <div class="row">
-    <label class="chk"><input type="checkbox" id="voice" checked> Speak out loud</label>
-    <span class="hint" id="settingsLine"></span>
-  </div>
-  <div class="row" id="demoRow">
-    <span class="hint">Demo controls (only shown when no backend is connected):</span>
-    <button id="demoBtn"></button>
+    <div class="readings" id="readings"></div>
+
+    <div class="chart">
+      <div class="legend" id="legend"></div>
+      <canvas id="chart"></canvas>
+    </div>
+
+    <div class="row2">
+      <div class="note">
+        <div class="who">Kelvin says:</div>
+        <div class="said" id="said">Watching the experiment. I'll speak up the moment something looks wrong.</div>
+      </div>
+      <div class="rx">
+        <h3>Suggested fix</h3>
+        <div id="rxBody"><div class="empty">Nothing to fix right now.</div></div>
+        <div class="settings" id="settingsLine"></div>
+        <button class="apply" id="applyBtn" disabled>Apply fix</button>
+      </div>
+    </div>
+
+    <div class="log">
+      <h2>Lab log <span>every mistake, every fix</span></h2>
+      <table>
+        <thead><tr><th style="width:90px">Time</th><th>What went wrong</th><th>Fix</th><th style="width:130px">Result</th></tr></thead>
+        <tbody id="logBody"></tbody>
+      </table>
+      <div class="emptylog" id="emptyLog">No mistakes yet. Nice work.</div>
+    </div>
+
+    <div class="foot">
+      <label><input type="checkbox" id="voice" checked> Speak out loud</label>
+      <div class="demo" id="demoRow"><span>Demo:</span><button id="demoBtn"></button></div>
+    </div>
   </div>
 </div>
 
 <script>
-// ---------- config ----------
+// ------------------------------------------------------------ config
 const WS_URL = "ws://localhost:8000/ws";
 const WINDOW_S = { motor: 10, cooling: 120 };
+const LABS = {
+  motor: {
+    explain: "<b>What you're looking at:</b> a student's code is trying to hold a robot's wheel at a set speed. The blue line is the real wheel, the dashed line is where it should be.",
+    legend: ["Wheel speed", "Target speed"],
+    stable: "The wheel is doing exactly what the student asked.",
+  },
+  cooling: {
+    explain: "<b>What you're looking at:</b> a cup of hot water cooling down. Physics predicts the dashed curve. The blue line is the real thermometer reading.",
+    legend: ["Measured temperature", "What physics predicts"],
+    stable: "The readings match what physics predicts.",
+  },
+};
 
-// ---------- state ----------
+// ------------------------------------------------------------ state
 const $ = id => document.getElementById(id);
-let lab = "motor";
-let live = false, ws = null;
-let mistakes = { motor: 0, cooling: 0 };
-let pendingFix = null;
+let lab = "motor", live = false, ws = null;
 let settings = { kp: 1.2, ki: 0.4, kd: 0.05 };
-const series = { motor: [], cooling: [] };   // points: {t (seconds), a (measured), b (target/expected)}
 let latest = { motor: {}, cooling: {} };
+const series = { motor: [], cooling: [] };
+const marks = { motor: [], cooling: [] };            // chart annotations {t, text}
+const state = { motor: "stable", cooling: "stable" }; // stable | mistake | fixing | fixed
+const message = { motor: "", cooling: "" };
+const fixes = { motor: null, cooling: null };
+const log = [];                                       // {lab, time, what, fix, result}
+let fixedTimer = null;
 
-// ---------- incoming messages (same shapes as the README) ----------
+// ------------------------------------------------------------ incoming messages (README format)
 function handle(msg) {
-  if (msg.type === "diagnosis") return showDiagnosis(msg);
-  if (msg.type === "settings") { settings = { kp: msg.kp, ki: msg.ki, kd: msg.kd }; return renderSettings(); }
-  if (msg.lab === "motor") {
-    latest.motor = msg;
-    push("motor", { t: msg.t / 1000, a: msg.speed, b: msg.target });
-  } else if (msg.lab === "cooling") {
-    latest.cooling = msg;
-    push("cooling", { t: msg.t / 1000, a: msg.temp, b: msg.expected });
-  }
+  if (msg.type === "diagnosis") return onDiagnosis(msg);
+  if (msg.type === "settings") { settings = { kp: +msg.kp, ki: +msg.ki, kd: +msg.kd }; return render(); }
+  if (msg.lab === "motor") { latest.motor = msg; push("motor", { t: msg.t / 1000, a: msg.speed, b: msg.target }); }
+  else if (msg.lab === "cooling") { latest.cooling = msg; push("cooling", { t: msg.t / 1000, a: msg.temp, b: msg.expected }); }
 }
 function push(which, p) {
   const s = series[which]; s.push(p);
   const cutoff = p.t - WINDOW_S[which];
   while (s.length && s[0].t < cutoff) s.shift();
+  while (marks[which].length && marks[which][0].t < cutoff) marks[which].shift();
 }
+const nowT = which => series[which].length ? series[which][series[which].length - 1].t : 0;
+const clock = () => new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
 
-function showDiagnosis(d) {
-  if (d.lab && d.lab !== lab) { $("lab").value = d.lab; setLab(d.lab); }
+function onDiagnosis(d) {
+  const L = d.lab || lab;
+  if (L !== lab) switchLab(L);
   const good = d.issue === "ok";
-  $("diag").className = "diag " + (good ? "ok" : "bad");
-  $("diagText").textContent = d.text || "";
-  $("status").className = "pill " + (good ? "ok" : "bad");
-  $("status").textContent = good ? "Monitoring" : "Mistake caught";
-  if (!good) mistakes[d.lab || lab]++;
-  pendingFix = d.fix || null;
-  if (pendingFix) {
-    $("fixRow").style.display = "flex";
-    $("fixVals").innerHTML = "Proposed settings: " + fmtFix(pendingFix);
-    $("applyBtn").disabled = false;
+  message[L] = d.text || "";
+  if (good) {
+    state[L] = "fixed";
+    const open = [...log].reverse().find(e => e.lab === L && (e.result === "open" || e.result === "applied"));
+    if (open) open.result = "fixed";
+    marks[L].push({ t: nowT(L), text: "fixed!", good: true });
+    clearTimeout(fixedTimer);
+    fixedTimer = setTimeout(() => { if (state[L] === "fixed") { state[L] = "stable"; render(); } }, 9000);
+    fixes[L] = null;
   } else {
-    $("fixRow").style.display = "none";
+    const prev = [...log].reverse().find(e => e.lab === L && e.result === "applied");
+    if (prev) prev.result = "partial";
+    state[L] = "mistake";
+    fixes[L] = d.fix || null;
+    log.push({ lab: L, time: clock(), what: shortWhat(d), fix: d.fix ? fixText(d.fix) : handFix(d), result: "open" });
+    marks[L].push({ t: nowT(L), text: shortMark(d), good: false });
   }
   speak(d.text);
+  render();
 }
-const fmtFix = f => ["kp", "ki", "kd"].filter(k => f[k] !== undefined).map(k => k + " <b>" + Number(f[k]).toFixed(2) + "</b>").join(" &nbsp; ");
+function shortWhat(d) {
+  const m = (d.text || "").match(/\d+ (percent|degrees)/);
+  const names = { overshoot: "Wheel overshot its target", slow: "Wheel too slow to reach target", steady_error: "Wheel settled below target",
+                  saturated: "Motor maxed out", jitter: "Motor power jittering", probe_out: "Reading dropped off the curve", not_fixed: "Still overshooting" };
+  return (names[d.issue] || "Something looks wrong") + (m ? " by " + m[0] : "");
+}
+function shortMark(d) {
+  const m = (d.text || "").match(/(\d+) (percent|degrees)/);
+  if (d.issue === "probe_out") return "probe out? " + (m ? "-" + m[1] + "°" : "");
+  if (d.issue === "overshoot" || d.issue === "not_fixed") return "overshot " + (m ? m[1] + "%" : "");
+  return "look here";
+}
+const handFix = d => d.issue === "probe_out" ? "Put the probe back in the water" : "Check the setup by hand";
+const fixText = f => Object.keys(f).map(k => k + " " + (+settings[k] || 0).toFixed(2) + " → " + (+f[k]).toFixed(2)).join(", ");
 
 function speak(text) {
   if (!text || !$("voice").checked || !window.speechSynthesis) return;
-  try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {}
+  try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); u.rate = 1.02; speechSynthesis.speak(u); } catch (e) {}
 }
 
-// ---------- outgoing ----------
+// ------------------------------------------------------------ apply fix
 $("applyBtn").onclick = () => {
-  if (!pendingFix) return;
-  const msg = { type: "apply_fix", fix: pendingFix };
-  if (live && ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); else sim.applyFix(pendingFix);
-  settings = Object.assign({}, settings, pendingFix); renderSettings();
-  $("applyBtn").disabled = true;
-  $("diagText").textContent = "Fix sent to the robot. Watching the next run.";
-  $("diag").className = "diag"; $("status").className = "pill ok"; $("status").textContent = "Monitoring";
+  const f = fixes[lab]; if (!f) return;
+  if (live && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "apply_fix", fix: f }));
+  else sim.applyFix(f);
+  settings = Object.assign({}, settings, f);
+  const open = [...log].reverse().find(e => e.lab === lab && e.result === "open");
+  if (open) open.result = "applied";
+  fixes[lab] = null;
+  state[lab] = "fixing";
+  message[lab] = "Fix sent to the robot. Watching the next run to see if it worked.";
+  render();
 };
 
-// ---------- websocket with auto-reconnect ----------
+// ------------------------------------------------------------ websocket
 function connect() {
   try { ws = new WebSocket(WS_URL); } catch (e) { return setTimeout(connect, 2000); }
   ws.onopen = () => {
     live = true;
-    series.motor.length = 0; series.cooling.length = 0;
-    latest = { motor: {}, cooling: {} };
-    mistakes = { motor: 0, cooling: 0 };
-    pendingFix = null;
-    $("fixRow").style.display = "none";
-    $("diag").className = "diag"; $("diagText").textContent = "Connected. Watching the experiment.";
-    $("status").className = "pill ok"; $("status").textContent = "Monitoring";
-    renderConn();
+    for (const k of ["motor", "cooling"]) { series[k].length = 0; marks[k].length = 0; state[k] = "stable"; message[k] = ""; fixes[k] = null; latest[k] = {}; }
+    log.length = 0; render();
   };
   ws.onmessage = ev => { try { handle(JSON.parse(ev.data)); } catch (e) {} };
-  ws.onclose = () => { live = false; renderConn(); setTimeout(connect, 2000); };
+  ws.onclose = () => { if (live) { live = false; render(); } setTimeout(connect, 2000); };
   ws.onerror = () => { try { ws.close(); } catch (e) {} };
 }
-function renderConn() {
-  $("conn").className = "pill " + (live ? "ok" : "demo");
-  $("conn").textContent = live ? "Live" : "Demo data";
-  $("demoRow").style.display = live ? "none" : "flex";
-}
 
-// ---------- built-in fake data (runs only when no backend is connected) ----------
+// ------------------------------------------------------------ demo data (only when no backend)
 const sim = {
   t: 0, speed: 0, vel: 0, target: 40, stepAt: 0, peak: 0, lastOver: null, flagged: false, verifyNext: false,
-  kp: 1.2, cool: 80, coolT: 0, probeOut: false, coolFlag: false,
-  applyFix(f) { if (f.kp !== undefined) this.kp = f.kp; this.flagged = false; this.verifyNext = true; },
-  loadBad() { this.kp = 6; this.flagged = false; this.verifyNext = false; settings = { kp: 6, ki: 0.4, kd: 0.05 }; renderSettings(); },
+  kp: 1.2, fixAt: 0, cool: 80, coolT: 0, probeOut: false, coolFlag: false,
+  applyFix(f) { if (f.kp !== undefined) this.kp = f.kp; this.flagged = false; this.verifyNext = true; this.fixAt = this.t; },
+  loadBad() { this.kp = 6; this.flagged = false; this.verifyNext = false; settings = { kp: 6, ki: 0.4, kd: 0.05 }; render(); },
   tick(dt) {
     this.t += dt;
-    // motor: target flips every 4 s; damping drops as kp rises, so a high kp overshoots and rings
     if (this.t - this.stepAt >= 4) { this.endStep(); this.stepAt = this.t; this.target = this.target === 40 ? 100 : 40; this.peak = this.speed; }
     const wn = 7, zeta = Math.max(0.08, Math.min(1, 1.08 / this.kp));
     this.vel += (wn * wn * (this.target - this.speed) - 2 * zeta * wn * this.vel) * dt;
@@ -191,7 +319,6 @@ const sim = {
     if (this.target === 100) this.peak = Math.max(this.peak, this.speed);
     const sp = this.speed + (Math.random() - 0.5) * 0.8;
     handle({ lab: "motor", t: this.t * 1000, target: this.target, speed: sp, motor: Math.max(-255, Math.min(255, sp * 2 + this.vel * 0.4)), tilt: 0 });
-    // cooling: one reading a second
     this.coolT += dt;
     if (this.coolT >= 1) {
       this.coolT = 0;
@@ -204,92 +331,146 @@ const sim = {
         handle({ type: "diagnosis", lab: "cooling", issue: "probe_out", text: "Your reading dropped " + Math.round(expected - temp) + " degrees below where it should be. The probe looks like it is out of the water." });
       } else if (this.coolFlag && !this.probeOut && Math.abs(expected - temp) < 1.5) {
         this.coolFlag = false;
-        handle({ type: "diagnosis", lab: "cooling", issue: "ok", text: "The probe is back and the readings match again. I logged the mistake for the report." });
+        handle({ type: "diagnosis", lab: "cooling", issue: "ok", text: "The probe is back and the readings match again. I logged the mistake." });
       }
     }
   },
   endStep() {
     if (this.target !== 100) return;
-    const over = Math.round(Math.max(0, this.peak - 100));
+    const over = Math.round(Math.max(0, this.peak - 100) / 60 * 100);
     if (this.verifyNext) {
+      if (this.stepAt < this.fixAt) return;   // judge only a full step run with the new setting
       this.verifyNext = false;
       const before = this.lastOver;
-      handle({ type: "diagnosis", lab: "motor", issue: over > 20 ? "overshoot" : "ok",
-        text: over > 20 ? "Still overshooting by " + over + " percent. Lower the first setting again."
-                        : "That worked. Overshoot went from " + before + " percent down to " + over + " percent.",
-        fix: over > 20 ? { kp: +(this.kp / 2).toFixed(2) } : undefined });
-    } else if (over > 20 && !this.flagged) {
+      handle(over > 25
+        ? { type: "diagnosis", lab: "motor", issue: "not_fixed", text: "Better, but still " + over + " percent overshoot. Let's cut kp in half again.", fix: { kp: +(this.kp / 2).toFixed(2) } }
+        : { type: "diagnosis", lab: "motor", issue: "ok", text: "That worked. Overshoot went from " + before + " percent to " + over + " percent." });
+    } else if (over > 25 && !this.flagged) {
       this.flagged = true;
       handle({ type: "diagnosis", lab: "motor", issue: "overshoot",
-        text: "The wheel overshot its target by " + over + " percent and kept ringing. The first setting is too high for this motor. Lower it to about a third.",
-        fix: { kp: +(this.kp / 3).toFixed(2) } });
+        text: "The wheel overshot its target by " + over + " percent and kept oscillating. The first setting, kp, is too high for this motor. Lower it to about a third.",
+        fix: { kp: +(this.kp * 0.35).toFixed(2) } });
     }
     this.lastOver = over;
-  }
+  },
 };
 setInterval(() => { if (!live) sim.tick(0.02); }, 20);
-
 $("demoBtn").onclick = () => {
-  if (lab === "motor") sim.loadBad();
-  else { sim.probeOut = !sim.probeOut; renderDemoBtn(); }
+  if (lab === "motor") sim.loadBad(); else { sim.probeOut = !sim.probeOut; render(); }
 };
-function renderDemoBtn() {
-  $("demoBtn").textContent = lab === "motor" ? "Load a bad controller" : (sim.probeOut ? "Put the probe back" : "Pull the probe out");
-}
 
-// ---------- rendering ----------
-function setLab(v) {
+// ------------------------------------------------------------ rendering
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => switchLab(b.dataset.lab));
+function switchLab(v) {
   lab = v;
-  $("legend").innerHTML = lab === "motor"
-    ? '<span><i class="sw" style="background:var(--blue)"></i>Wheel speed</span><span><i class="sw" style="background:var(--gray)"></i>Target</span>'
-    : '<span><i class="sw" style="background:var(--blue)"></i>Temperature</span><span><i class="sw" style="background:var(--gray)"></i>Expected</span>';
-  renderDemoBtn(); renderSettings();
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.lab === v));
+  render();
 }
-$("lab").onchange = e => setLab(e.target.value);
 
-function renderSettings() {
-  $("settingsLine").innerHTML = lab === "motor"
-    ? "Current settings: kp " + Number(settings.kp).toFixed(2) + ", ki " + Number(settings.ki).toFixed(2) + ", kd " + Number(settings.kd).toFixed(2)
-    : "";
+const STAMPS = { stable: "Stable", mistake: "Mistake caught", fixing: "Testing fix", fixed: "Fixed" };
+function render() {
+  const L = LABS[lab], st = state[lab];
+  $("explain").innerHTML = L.explain;
+  $("verdict").className = "verdict " + (st === "stable" ? "" : st);
+  $("stamp").textContent = STAMPS[st];
+  $("verdictText").textContent =
+    st === "stable" ? L.stable :
+    st === "mistake" ? (lab === "motor" ? "Something is wrong with the student's controller. Kelvin found the cause below." : "A reading broke away from the physics. Kelvin found the cause below.") :
+    st === "fixing" ? "The fix is on the robot. Kelvin is watching the next run." :
+    "Kelvin's fix worked. Back on track.";
+  $("caught").textContent = log.filter(e => e.lab === lab).length;
+  $("legend").innerHTML = '<span><i class="key"></i>' + L.legend[0] + '</span><span><i class="key target"></i>' + L.legend[1] + "</span>";
+  $("said").textContent = message[lab] || "Watching the experiment. I'll speak up the moment something looks wrong.";
+
+  const f = fixes[lab];
+  if (f) {
+    $("rxBody").innerHTML = Object.keys(f).map(k =>
+      '<div class="change">' + k + ' <span class="old">' + (+settings[k] || 0).toFixed(2) + '</span><span class="arrow">→</span><span class="new">' + (+f[k]).toFixed(2) + "</span></div>").join("");
+    $("applyBtn").disabled = false;
+  } else {
+    $("rxBody").innerHTML = '<div class="empty">' + (st === "mistake" ? (lab === "cooling" ? "Put the probe back in the water. Kelvin will confirm when the readings match again." : "Check the setup by hand.") : "Nothing to fix right now.") + "</div>";
+    $("applyBtn").disabled = true;
+  }
+  $("settingsLine").textContent = lab === "motor" ? "on the robot now: kp " + (+settings.kp).toFixed(2) + " · ki " + (+settings.ki).toFixed(2) + " · kd " + (+settings.kd).toFixed(2) : "";
+
+  const rows = log.filter(e => e.lab === lab).slice().reverse();
+  const label = { open: ["open", "Needs a fix"], applied: ["applied", "Fix applied"], fixed: ["fixed", "Fixed ✓"], partial: ["partial", "Helped, not enough"] };
+  $("logBody").innerHTML = rows.map(e =>
+    '<tr><td class="time">' + e.time + "</td><td>" + e.what + "</td><td>" + e.fix + '</td><td><span class="chip ' + label[e.result][0] + '">' + label[e.result][1] + "</span></td></tr>").join("");
+  $("emptyLog").style.display = rows.length ? "none" : "block";
+
+  $("dot").className = "dot" + (live ? " live" : "");
+  $("connText").textContent = live ? "live from the lab bench" : "demo data (no backend)";
+  $("demoRow").style.display = live ? "none" : "flex";
+  $("demoBtn").textContent = lab === "motor" ? "Load a student's bad controller" : (sim.probeOut ? "Put the probe back" : "Pull the probe out");
 }
-const n = (v, d) => (v === undefined || v === null || isNaN(v)) ? "--" : Number(v).toFixed(d);
-function renderCards() {
+
+function readingsHTML() {
   const m = latest.motor, c = latest.cooling;
-  const items = lab === "motor"
-    ? [["Wheel speed", n(m.speed, 1)], ["Target", n(m.target, 0)], ["Motor power", n(m.motor, 0)], ["Mistakes caught", mistakes.motor]]
-    : [["Temperature", n(c.temp, 1) + " °C"], ["Expected", c.expected === undefined ? "--" : n(c.expected, 1) + " °C"], ["Mistakes caught", mistakes.cooling]];
-  $("cards").innerHTML = items.map(i => '<div class="card"><div class="k">' + i[0] + '</div><div class="v">' + i[1] + "</div></div>").join("");
+  const n = (v, d) => (v === undefined || v === null || isNaN(v)) ? "--" : Number(v).toFixed(d);
+  let items;
+  if (lab === "motor") {
+    const gap = (m.speed !== undefined) ? Math.abs(m.target - m.speed) : null;
+    items = [
+      ["Wheel speed", n(m.speed, 0), "", "how fast it's actually spinning"],
+      ["Target", n(m.target, 0), "", "what the student asked for"],
+      ["Off by", gap === null ? "--" : n(gap, 0), "", gap !== null && gap < 5 ? "right on target" : "still catching up"],
+    ];
+  } else {
+    const gap = (c.temp !== undefined && c.expected !== undefined) ? c.temp - c.expected : null;
+    items = [
+      ["Temperature", n(c.temp, 1), "°C", "what the probe reads"],
+      ["Predicted", c.expected === undefined ? "--" : n(c.expected, 1), "°C", "what physics says"],
+      ["Off by", gap === null ? "--" : n(Math.abs(gap), 1), "°C", gap !== null && Math.abs(gap) < 1.5 ? "matches" : "doesn't match"],
+    ];
+  }
+  return items.map(i => '<div class="reading"><div class="k">' + i[0] + '</div><div class="v">' + i[1] + "<small>" + i[2] + '</small></div><div class="hint">' + i[3] + "</div></div>").join("");
 }
 
 function draw() {
   const cv = $("chart"), dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
-  if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
   const x = cv.getContext("2d"); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h);
-  const s = series[lab], L = 46, R = w - 10, T = 10, B = h - 26;
+  const s = series[lab], L = 48, R = w - 14, T = 34, B = h - 28;
   let lo = lab === "motor" ? 0 : 15, hi = lab === "motor" ? 140 : 85;
   for (const p of s) { if (p.a > hi) hi = p.a; if (p.a < lo) lo = p.a; }
   hi = Math.ceil(hi / 10) * 10; lo = Math.floor(lo / 10) * 10;
   const tEnd = s.length ? s[s.length - 1].t : 0, tStart = tEnd - WINDOW_S[lab];
-  const X = t => L + (t - tStart) / (tEnd - tStart || 1) * (R - L), Y = v => B - (v - lo) / (hi - lo || 1) * (B - T);
-  x.font = "13px system-ui"; x.fillStyle = "#9aa3b2"; x.strokeStyle = "#2a2f3a"; x.lineWidth = 1;
+  const X = t => L + (t - tStart) / (tEnd - tStart || 1) * (R - L), Y = v => B - (v - lo) / ((hi - lo) || 1) * (B - T);
+  x.font = "500 13px 'IBM Plex Mono', Consolas, monospace"; x.fillStyle = "#55607a"; x.strokeStyle = "rgba(70,110,160,.22)"; x.lineWidth = 1;
   for (let k = 0; k <= 4; k++) {
     const v = lo + (hi - lo) * k / 4, y = Y(v);
     x.beginPath(); x.moveTo(L, y); x.lineTo(R, y); x.stroke();
     x.textAlign = "right"; x.fillText(Math.round(v), L - 8, y + 4);
   }
-  x.textAlign = "center"; x.fillText("last " + WINDOW_S[lab] + " seconds", (L + R) / 2, h - 6);
+  x.textAlign = "center"; x.font = "15px Caveat, 'Segoe Print', cursive"; x.fillStyle = "#8a8471";
+  x.fillText(lab === "motor" ? "last 10 seconds" : "last 2 minutes", (L + R) / 2, h - 6);
   const line = (key, color, width, dash) => {
-    x.beginPath(); x.setLineDash(dash || []); x.strokeStyle = color; x.lineWidth = width; x.lineJoin = "round";
+    x.beginPath(); x.setLineDash(dash || []); x.strokeStyle = color; x.lineWidth = width; x.lineJoin = "round"; x.lineCap = "round";
     let started = false;
     for (const p of s) { if (p[key] === undefined || p[key] === null) continue; const px = X(p.t), py = Y(p[key]); started ? x.lineTo(px, py) : x.moveTo(px, py); started = true; }
     x.stroke(); x.setLineDash([]);
   };
-  line("b", "#8b93a1", 2, [6, 5]);
-  line("a", $("status").classList.contains("bad") ? "#ff5c5c" : "#4c9aff", 3);
+  line("b", "#8a8471", 2.5, [7, 6]);
+  line("a", state[lab] === "mistake" ? "#c0392b" : "#2457a6", 3.2);
+  // handwritten annotations where Kelvin caught something
+  for (const m of marks[lab]) {
+    if (m.t < tStart) continue;
+    const px = X(m.t), col = m.good ? "#2f7d4f" : "#c0392b";
+    x.strokeStyle = col; x.lineWidth = 1.5; x.setLineDash([3, 4]);
+    x.beginPath(); x.moveTo(px, T - 6); x.lineTo(px, B); x.stroke(); x.setLineDash([]);
+    x.font = "700 22px Caveat, 'Segoe Print', cursive"; x.fillStyle = col;
+    x.textAlign = px > (L + R) / 2 ? "right" : "left";
+    x.fillText(m.text, px + (x.textAlign === "left" ? 6 : -6), T - 10);
+  }
 }
 
-function frame() { renderCards(); draw(); requestAnimationFrame(frame); }
-setLab("motor"); renderConn(); connect(); frame();
+let lastReadings = 0;
+function frame(ts) {
+  if (ts - lastReadings > 120) { $("readings").innerHTML = readingsHTML(); lastReadings = ts; }
+  draw(); requestAnimationFrame(frame);
+}
+render(); connect(); requestAnimationFrame(frame);
 </script>
 </body>
 </html>
