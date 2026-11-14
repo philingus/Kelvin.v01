@@ -30,7 +30,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-
+from photon.ta_report import send_ta_report
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -418,8 +418,8 @@ def handle_voice(question: str, lab: str):
     send({"type": "answer", "question": question, "text": text})
 
 
-def send_report():
-    """Write a short summary of the session and send it to the dashboard."""
+def build_report():
+    """Build a short summary of the session and send it to the dashboard."""
     mins = max(1, round((time.time() - session["started"]) / 60))
     facts = {"minutes": mins, "mistakes_caught": session["mistakes"], "fixes_that_worked": session["fixed"],
              "changes_applied": session["applied"], "settings_now": settings, "log": session["events"][-40:]}
@@ -435,8 +435,18 @@ def send_report():
         summary = (f"In {mins} minute{'s' if mins != 1 else ''}, Kelvin caught {m} mistake{'s' if m != 1 else ''} "
                    f"and confirmed {f} fix{'es' if f != 1 else ''} that worked. The controller settings are now "
                    f"kp {settings['kp']:g}, ki {settings['ki']:g}, kd {settings['kd']:g}.")
-    send({"type": "report", "summary": summary, "minutes": mins, "settings": settings,
-          "mistakes": session["mistakes"], "fixed": session["fixed"]})
+        return {
+        "type": "report",
+        "summary": summary,
+        "minutes": mins,
+        "settings": settings,
+        "mistakes": session["mistakes"],
+        "fixed": session["fixed"],
+    }
+
+
+def send_report():
+    send(build_report())
 
 
 def run_stepper():
@@ -733,6 +743,14 @@ async def ws_endpoint(ws: WebSocket):
                     send({"type": "answer", "question": "Apply fix", "text": problem})
             elif msg.get("type") == "report":
                 threading.Thread(target=send_report, daemon=True).start()
+            elif msg.get("type") == "request_ta":
+                try:
+                    report = await asyncio.to_thread(build_report)
+                    status = await asyncio.to_thread(send_ta_report, report["summary"])
+                except Exception as exc:
+                    print(f"[Photon] TA report failed ({type(exc).__name__})")
+                    status = "Could not send the TA report. Check the backend terminal."
+                await ws.send_text(json.dumps({"type": "ta_status", "text": status}))
             elif msg.get("type") == "ask":            # {"type":"ask","question":"...","lab":"motor"}
                 threading.Thread(target=handle_voice, args=(str(msg.get("question", "")), str(msg.get("lab", ""))),
                                  daemon=True).start()

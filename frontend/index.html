@@ -216,8 +216,13 @@
   <div class="rsheet">
     <div class="rhead">
       <div><h2>Lab report</h2><div class="rdate" id="rDate"></div></div>
-      <div class="ractions"><button type="button" class="rprint" id="rPrint">Save as PDF / Print</button><button type="button" class="rclose" id="rClose">Close</button></div>
-    </div>
+      <div class="ractions">
+  <button type="button" class="rprint" id="rPrint">Save as PDF / Print</button>
+  <button type="button" class="rprint" id="rSendTA">Send to TA</button>
+  <span id="rTAStatus" role="status"></span>
+  <button type="button" class="rclose" id="rClose">Close</button>
+  </div>
+</div>
     <div class="rlabel">Kelvin's summary</div>
     <p class="rsummary" id="rSummary"></p>
     <div class="rstats" id="rStats"></div>
@@ -266,6 +271,11 @@ function handle(msg) {
   if (msg.type === "fix_update") { fixes[msg.lab || "motor"] = msg.fix; return render(); }
   if (msg.type === "undone") return markUndone();
   if (msg.type === "action" && msg.action === "switch_lab") return switchLab(msg.lab === "cooling" ? "cooling" : "motor");
+    if (msg.type === "ta_status") {
+    $("rTAStatus").textContent = msg.text;
+    $("rSendTA").disabled = false;
+    return;
+  }
   if (msg.type === "report") return showReport(msg);
   if (msg.type === "settings") { settings = { kp: +msg.kp, ki: +msg.ki, kd: +msg.kd }; return render(); }
   if (msg.lab === "motor") { latest.motor = msg; push("motor", { t: msg.t / 1000, a: msg.speed, b: msg.target }); }
@@ -492,6 +502,15 @@ $("reportBtn").onclick = () => {
 };
 $("rClose").onclick = () => { $("report").hidden = true; };
 $("rPrint").onclick = () => window.print();
+$("rSendTA").onclick = () => {
+  if (!live || !ws || ws.readyState !== WebSocket.OPEN) {
+    $("rTAStatus").textContent = "Start the Kelvin backend to send the report.";
+    return;
+  }
+  ws.send(JSON.stringify({ type: "request_ta" }));
+  $("rSendTA").disabled = true;
+  $("rTAStatus").textContent = "Sending report…";
+};
 document.addEventListener("keydown", e => { if (e.key === "Escape") $("report").hidden = true; });
 const pageOpened = Date.now();
 function showReport(r) {

@@ -3,3 +3,4 @@ pyserial
 pyserial==3.5
 uvicorn
 websockets
+photonhq-api==0.6.0
