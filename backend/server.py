@@ -103,6 +103,9 @@ TEMPLATES = {
                  "The settings are too aggressive, or the battery is low. Lower kp, and check the battery.",
     "jitter": "The motor power is jittering. The third setting, kd, is amplifying sensor noise. Lower it.",
     "fixed": "That worked. Overshoot went from {before} percent to {after} percent.",
+    "fixed_gap": "That worked. The gap to the target went from {before} percent to {after} percent.",
+    "fixed_reach": "That worked. The wheel now reaches {after} percent of its target, up from {before} percent.",
+    "fixed_sat": "That worked. Full power went from {before} percent of the time to {after} percent.",
     "not_fixed": "Better, but still {after} percent overshoot. Let's cut {name} in half again.",
     "probe_out": "Your reading dropped {drop} degrees below where it should be. "
                  "The probe looks like it is out of the water.",
@@ -119,7 +122,7 @@ TEMPLATES = {
                  "Check for anything touching the wheel.",
     "drag_gone": "The drag is gone and the wheel is back on target. Your settings were fine the whole time.",
 }
-OK_ISSUES = ("fixed", "probe_back", "drag_gone")      # these turn the dashboard green
+OK_ISSUES = ("fixed", "fixed_gap", "fixed_reach", "fixed_sat", "probe_back", "drag_gone")      # these turn the dashboard green
 
 
 # Gemini models to try, newest first. gemini-2.5-flash was shut down Oct 16, 2026.
@@ -156,15 +159,22 @@ def ask_llm(prompt: str, timeout: float = 7, max_tokens: int = 150, json_mode: b
             fast = json.dumps({"contents": [{"parts": [{"text": prompt}]}], "generationConfig": gen}).encode()
             plain = json.dumps({"contents": [{"parts": [{"text": prompt}]}],
                                 **({"generationConfig": plain_gen} if plain_gen else {})}).encode()
+            deadline = time.time() + timeout
             for model in gemini_models():
+                left = deadline - time.time()
+                if left < 1.5:
+                    break
                 body = plain if model in GEMINI_NO_LEVEL else fast
                 url = (f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
                        f"?key={os.environ['GEMINI_API_KEY']}")
                 req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
                 try:
-                    with urllib.request.urlopen(req, timeout=timeout) as r:
+                    with urllib.request.urlopen(req, timeout=min(left, max(3.0, timeout * 0.6))) as r:
                         data = json.load(r)
                 except urllib.error.HTTPError as e:
+                    if e.code in (429, 500, 502, 503, 504):    # overloaded: the next model may answer
+                        print(f"Gemini {model} busy ({e.code}), trying the next model")
+                        continue
                     if e.code == 404:                      # model retired or wrong name, try the next one
                         print(f"Gemini model {model} not found, trying the next one")
                         GEMINI_DEAD.add(model)
@@ -178,6 +188,9 @@ def ask_llm(prompt: str, timeout: float = 7, max_tokens: int = 150, json_mode: b
                         return gemini_text(data)
                     print("Gemini error:", e.code, e.read()[:300])
                     return None
+                except (TimeoutError, OSError) as e:          # slow network or model: try the next one
+                    print(f"Gemini {model} too slow ({e}), trying the next model")
+                    continue
                 GEMINI_GOOD[0] = model
                 return gemini_text(data)
             return None
@@ -724,6 +737,8 @@ class MotorWatcher:
         self.verify = False
         self.skip_next = False     # ignore the step that was already running when a fix was applied
         self.last_over = None
+        self.last = {}             # the last step's numbers: over, err, reach, sat
+        self.fixing = None         # the issue the current fix is meant to solve
         # drag detection: once the wheel has settled at a steady target, watch for something slowing it down
         self.settle_count = 0
         self.settled = False
@@ -815,16 +830,37 @@ class MotorWatcher:
             return                                       # this motor coasts down without overshoot; judge the next speed-up
         if self.verify:
             self.verify = False
-            if over < OVERSHOOT_ALERT:
-                diagnose("motor", "fixed", {"before": self.last_over, "after": over})
-                self.flagged = False
-            else:
+            before, fixing = self.last, self.fixing or "overshoot"
+            self.last = {"over": over, "err": err, "reach": reach, "sat": sat}
+            self.last_over = over
+            if fixing == "steady_error" and over < OVERSHOOT_ALERT:
+                if err < 8:
+                    diagnose("motor", "fixed_gap", {"before": before.get("err", err), "after": max(err, 0)})
+                    self.flagged, self.fixing = False, None
+                    return
+            elif fixing == "slow" and over < OVERSHOOT_ALERT:
+                if reach >= 85:
+                    diagnose("motor", "fixed_reach", {"before": before.get("reach", reach), "after": reach})
+                    self.flagged, self.fixing = False, None
+                    return
+            elif fixing == "saturated" and over < OVERSHOOT_ALERT:
+                if sat < 60:
+                    diagnose("motor", "fixed_sat", {"before": before.get("sat", sat), "after": sat})
+                    self.flagged, self.fixing = False, None
+                    return
+            elif over < OVERSHOOT_ALERT:
+                diagnose("motor", "fixed", {"before": before.get("over", over), "after": over})
+                self.flagged, self.fixing = False, None
+                return
+            elif fixing in ("overshoot", "overshoot_kp", "not_fixed"):
                 key = "ki" if settings["ki"] >= 1 else "kp"
                 diagnose("motor", "not_fixed", {"after": over, "name": key},
                          {key: round(settings[key] * 0.5, 3)})
-            self.last_over = over
-            return
+                self.fixing = "not_fixed"
+                return
+            self.flagged = False           # a different problem now: judge this step from scratch below
 
+        self.last = {"over": over, "err": err, "reach": reach, "sat": sat}
         self.last_over = over
         if self.flagged:
             return
@@ -845,7 +881,7 @@ class MotorWatcher:
         elif jitter > 40 and settings["kd"] > 0:
             issue, facts, fix = "jitter", {}, {"kd": round(settings["kd"] * 0.5, 3)}
         if issue:
-            self.flagged = True
+            self.flagged, self.fixing = True, issue
             diagnose("motor", issue, facts, fix)
 
 

@@ -132,7 +132,7 @@ TA texting goes through the Photon 2.0 Python SDK in `backend/photon/ta_report.p
 - `backend/photon/ta_report.py`: sends and receives TA texts through Photon
 - `backend/relay.py`: forwards a board on a second laptop to Kelvin
 - `backend/test_ai.py`: times one Gemini call per model, to pick the fastest on the venue Wi-Fi
-- `backend/main.py`, `backend/controller.py`: an earlier REST version of the motor backend (see `backend/README.md`); the demo runs `server.py`
+- `backend/main.py`, `backend/controller.py`: a REST version of the motor backend we built first at the event (see `backend/README.md`); the demo runs `server.py`
 - `frontend/index.html`: the dashboard, a single file
 - `firmware/minseg/minseg_speed/`: MinSeg wheel speed controller. `minseg_test/` is a one-shot wiring check.
 - `backend/logs/`: CSV recordings of each run (not committed)
