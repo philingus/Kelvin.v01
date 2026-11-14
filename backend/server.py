@@ -30,6 +30,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import photon.ta_report as photon_link
 from photon.ta_report import photon_ready, poll_ta, send_ta_report, send_ta_text
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -216,6 +217,25 @@ def remember_event(lab: str, text: str):
 # a report was sent, or a problem the TA heard about got fixed. Not every diagnosis.
 
 ta = {"open_since": None, "open_issue": "", "open_what": "", "stuck_sent": False, "failed_fixes": 0, "approval": None}
+
+
+ta_thread = []        # the TA conversation, newest last, so a refreshed dashboard can show it
+
+
+def ta_event(direction, text, mid, status, why=""):
+    """Photon reports a text to or from the TA. Show it on the dashboard (silently) with its delivery status."""
+    for e in ta_thread:
+        if e["id"] == mid:
+            e.update(status=status, why=why)
+            break
+    else:
+        ta_thread.append({"id": mid, "dir": direction, "text": text, "status": status, "why": why,
+                          "time": time.strftime("%I:%M %p").lstrip("0")})
+        del ta_thread[:-40]
+    send({"type": "ta_msg", **next(e for e in ta_thread if e["id"] == mid)})
+
+
+photon_link.on_event = ta_event
 
 
 def ta_enabled():
@@ -483,6 +503,29 @@ def parse_json(text):
         return None
 
 
+# The AI may only take an action when the message itself asks for it. This stops "how's it going?"
+# from triggering a report just because a report was the last thing in Kelvin's memory.
+ACTION_WORDS = {
+    "report": r"report|summary|recap|summari",
+    "stop": r"\bstop|halt|pause|turn (it )?off|kill",
+    "start": r"start|resume|turn (it )?on|go again|run",
+    "undo": r"undo|revert|back|previous|before",
+    "apply_fix": r"apply|go ahead|do it|use (it|that|the fix)|send it|\byes\b|fix",
+    "set_fix": r"\bk ?[pid]\b|gain|setting|third|half|quarter|double|twice|lower|raise|higher|less|more|reduce|increase|decrease|\d",
+    "set_target": r"speed|target|rpm|\d",
+    "hold": r"speed|hold|steady|keep|\d",
+    "switch_lab": r"switch|cooling|cup|temperature|motor|wheel|show|open|lab|go to",
+}
+
+
+def status_line() -> str:
+    last = next((e for e in reversed(session["events"]) if "[chat]" not in e), "nothing has gone wrong yet")
+    last = re.sub(r"^\d\d:\d\d:\d\d \[\w+\] ", "", last)
+    m, f = session["mistakes"], session["fixed"]
+    return (f"{STATION}: {m} mistake{'' if m == 1 else 's'} caught, {f} fixed. Settings kp "
+            f"{settings['kp']:g}, ki {settings['ki']:g}, kd {settings['kd']:g}. Latest: {last}")
+
+
 def handle_voice(question: str, lab: str, source: str = "student") -> str:
     """Someone talked to Kelvin. source "student" = voice or typing at the bench, "ta" = a text through Photon.
     Do what they asked, or answer the question. Both share one memory, so the TA can ask about the bench."""
@@ -527,6 +570,9 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
             '- {"type":"hold","value":number}: hold the wheel at one steady speed.\n'
             '- {"type":"stop"} or {"type":"start"}: stop or restart the motor.\n'
             '- {"type":"report","to_ta":bool}: write a summary report of this session; to_ta true texts it to the TA.\n'
+            "Only take an action when THIS message clearly asks for it. Greetings, 'ping', and questions like "
+            "'how is it going' are questions, so action is null. Things already asked for in the session_log are done; "
+            "never repeat them.\n"
             "If they are asking a question or chatting, action is null and you answer in say: at most three "
             "short sentences, plain words, no markdown, use the real numbers from the context when they help. "
             + ("Your answer is sent as a text message. " if source == "ta" else "Your answer is read out loud. ")
@@ -540,12 +586,14 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
         if reply:
             action = reply.get("action") if isinstance(reply.get("action"), dict) else None
             say = str(reply.get("say") or "").strip() or None
+            words = ACTION_WORDS.get(str((action or {}).get("type")))
+            if action and words and not re.search(words, question.lower()):
+                print(f"[guard] ignored {action} for {question!r}: the message didn't ask for it")
+                action, say = None, status_line() if source == "ta" else "Here's where things stand. " + status_line()
         else:
             action = backup_intent(question)
             if not action and source == "ta":           # no AI: still give the TA a useful status text
-                last = next((e for e in reversed(session["events"]) if "[chat]" not in e), "nothing has gone wrong yet")
-                say = (f"{STATION}: {session['mistakes']} mistakes caught, {session['fixed']} fixed. Settings kp "
-                       f"{settings['kp']:g}, ki {settings['ki']:g}, kd {settings['kd']:g}. Latest: {last}")
+                say = status_line()
             elif not action:
                 say = ("I can't reach my AI right now. I can still apply a fix, undo, switch labs, "
                        "change the speed, or show the report.")
@@ -953,6 +1001,8 @@ async def ws_endpoint(ws: WebSocket):
                                           else {k: v for k, v in open_diag[lab_name].items() if k != "fix"}))
     if pending_fix["motor"]:
         await ws.send_text(json.dumps({"type": "fix_update", "lab": "motor", "fix": pending_fix["motor"]}))
+    for e in ta_thread:
+        await ws.send_text(json.dumps({"type": "ta_msg", "replay": True, **e}))
     try:
         while True:
             msg = json.loads(await ws.receive_text())

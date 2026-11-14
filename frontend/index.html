@@ -122,6 +122,29 @@
   .demo button { background: transparent; border: 1.5px solid var(--ink-soft); color: var(--ink); padding: 5px 10px; font-size: 13px; }
 
   .chip.undone { color: var(--ink-soft); background: var(--paper-deep); }
+  /* TA texting: tabs in the log panel, an iMessage-style thread, and a toast */
+  .ltab { font: 600 17px var(--serif); background: none; border: none; border-bottom: 2.5px solid transparent; color: var(--ink-soft); padding: 0 2px 2px; border-radius: 0; }
+  .ltab.on { color: var(--ink); border-bottom-color: var(--ink); }
+  .badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--red); color: #fff; font: 600 11px var(--sans); text-align: center; vertical-align: 2px; }
+  .badge:empty { display: none; }
+  .tathread { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px 2px; }
+  .tathread .none { font-family: var(--hand); font-size: 19px; color: var(--pencil); }
+  .bub { max-width: 86%; padding: 7px 12px; border-radius: 16px; font-size: 14px; line-height: 1.35; white-space: pre-wrap; word-wrap: break-word; }
+  .bub.in { align-self: flex-start; background: #e9e9eb; color: #111; border-bottom-left-radius: 4px; }
+  .bub.out { align-self: flex-end; background: #0a7cff; color: #fff; border-bottom-right-radius: 4px; }
+  .bmeta { font-size: 11px; color: var(--ink-soft); margin-top: -4px; }
+  .bmeta.in { align-self: flex-start; } .bmeta.out { align-self: flex-end; }
+  .bmeta.failed { color: var(--red); font-weight: 600; } .bmeta.delivered { color: var(--green); font-weight: 600; }
+  .tatoast { position: fixed; bottom: 46px; left: 118px; width: 400px; z-index: 40; background: var(--card); border: 2px solid #0a7cff; border-radius: 14px;
+             box-shadow: 0 10px 30px rgba(29, 42, 68, .25); padding: 12px 16px; animation: slidein .3s ease-out; }
+  .tatoast[hidden] { display: none; }
+  @keyframes slidein { from { transform: translateY(30px); opacity: 0; } to { transform: none; opacity: 1; } }
+  .tt-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font: 600 14px var(--sans); color: #0a7cff; }
+  .tt-st { font-size: 12.5px; color: var(--ink-soft); white-space: nowrap; }
+  .tt-st.delivered { color: var(--green); } .tt-st.failed { color: var(--red); }
+  .tt-quote { margin-top: 6px; padding-left: 8px; border-left: 3px solid #c9c9cf; font-size: 13px; color: var(--ink-soft); }
+  .tt-quote:empty { display: none; }
+  .tt-text { margin-top: 6px; font-size: 14.5px; line-height: 1.4; max-height: 7.2em; overflow: hidden; }
   .repBtn { margin-left: auto; font: 600 12.5px var(--sans); background: transparent; border: 1.5px solid var(--ink); color: var(--ink); padding: 3px 10px; border-radius: 7px; }
   .repBtn:hover { background: var(--ink); color: var(--card); }
   .report { position: fixed; inset: 0; background: rgba(29, 42, 68, .45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; }
@@ -200,9 +223,10 @@
         <div class="body"><div id="rxBody"><div class="empty">Nothing to fix right now.</div></div><button class="apply" id="applyBtn" disabled>Apply fix</button></div>
       </div>
       <div class="panel log">
-        <h2>Lab log <span>every mistake, every fix</span><button class="repBtn" id="reportBtn" type="button">Report</button></h2>
+        <h2><button type="button" class="ltab on" data-view="lab">Lab log</button><button type="button" class="ltab" data-view="ta">📱 TA texts <b class="badge" id="taBadge"></b></button><button class="repBtn" id="reportBtn" type="button">Report</button></h2>
         <div class="emptylog" id="emptyLog">No mistakes yet. Nice work.</div>
         <ul id="logBody"></ul>
+        <div class="tathread" id="taBody" hidden></div>
         <div class="foot">
           <label><input type="checkbox" id="voice" checked> Voice</label><select id="voiceSel" title="Pick Kelvin's voice"></select>
           <div class="demo" id="demoRow"><button id="demoBtn"></button></div>
@@ -210,6 +234,12 @@
       </div>
     </div>
   </div>
+</div>
+
+<div class="tatoast" id="taToast" hidden>
+  <div class="tt-head"><span id="ttWho"></span><span class="tt-st" id="ttStatus"></span></div>
+  <div class="tt-quote" id="ttQuote"></div>
+  <div class="tt-text" id="ttText"></div>
 </div>
 
 <div class="report" id="report" hidden>
@@ -277,6 +307,7 @@ function handle(msg) {
     $("rSendTA").disabled = false;
     return;
   }
+  if (msg.type === "ta_msg") return onTaMsg(msg);
   if (msg.type === "report") return showReport(msg);
   if (msg.type === "settings") { settings = { kp: +msg.kp, ki: +msg.ki, kd: +msg.kd }; return render(); }
   if (msg.lab === "motor") { latest.motor = msg; push("motor", { t: msg.t / 1000, a: msg.speed, b: msg.target }); }
@@ -625,7 +656,7 @@ function connect() {
   ws.onopen = () => {
     live = true;
     for (const k of ["motor", "cooling"]) { series[k].length = 0; marks[k].length = 0; state[k] = "stable"; message[k] = ""; fixes[k] = null; latest[k] = {}; }
-    log.length = 0; render();
+    log.length = 0; taMsgs.length = 0; taUnread = 0; render(); renderTa();
   };
   ws.onmessage = ev => { try { handle(JSON.parse(ev.data)); } catch (e) {} };
   ws.onclose = () => { if (live) { live = false; render(); } setTimeout(connect, 2000); };
@@ -687,6 +718,56 @@ $("demoBtn").onclick = () => {
   if (lab === "motor") sim.loadBad(); else { sim.probeOut = !sim.probeOut; render(); }
 };
 
+// ------------------------------------------------------------ TA texts (Photon iMessage)
+// Every text to or from the TA shows up here silently, with Photon's delivery status, so the student
+// (and the judges) can see it actually went out.
+const taMsgs = [];
+let logView = "lab", taUnread = 0, toastId = null, toastTimer = null;
+const TA_STATUS = { sending: "Sending…", accepted: "Sent", dispatched: "Sent", queued: "Sent", delivered: "Delivered ✓", read: "Read ✓", failed: "Not delivered", received: "" };
+const taStatus = m => (TA_STATUS[m.status] !== undefined ? TA_STATUS[m.status] : m.status) + (m.status === "failed" && m.why ? ": " + m.why.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase() : "");
+function onTaMsg(m) {
+  let e = taMsgs.find(x => x.id === m.id);
+  const isNew = !e;
+  if (e) Object.assign(e, m); else { e = Object.assign({}, m); taMsgs.push(e); }
+  if (!m.replay) {
+    if (isNew && logView !== "ta") taUnread++;
+    if (isNew || toastId === e.id) showToast(e);
+  }
+  renderTa();
+}
+function showToast(e) {
+  toastId = e.id;
+  $("ttWho").textContent = e.dir === "in" ? "📱 Your TA texted Kelvin" : "📱 Kelvin texted your TA";
+  $("ttText").textContent = e.text;
+  // a reply to the TA quotes what the TA asked, so the whole exchange is readable in one glance
+  const i = taMsgs.indexOf(e), prev = i > 0 ? taMsgs[i - 1] : null;
+  $("ttQuote").textContent = e.dir === "out" && prev && prev.dir === "in" ? "TA: " + prev.text : "";
+  $("ttStatus").textContent = taStatus(e);
+  $("ttStatus").className = "tt-st " + e.status;
+  $("taToast").hidden = false;
+  clearTimeout(toastTimer);
+  const stay = e.status === "sending" || e.status === "accepted" || e.status === "dispatched" ? 14000 : 7000;   // wait for the delivery result
+  toastTimer = setTimeout(() => { $("taToast").hidden = true; toastId = null; }, stay);
+}
+$("taToast").onclick = () => { $("taToast").hidden = true; setLogView("ta"); };
+function renderTa() {
+  $("taBadge").textContent = taUnread ? taUnread : "";
+  if (logView !== "ta") return;
+  const esc = t => String(t).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+  $("taBody").innerHTML = taMsgs.length
+    ? taMsgs.map(m => '<div class="bub ' + m.dir + '">' + esc(m.text) + '</div><div class="bmeta ' + m.dir + " " + m.status + '">' +
+        (m.dir === "in" ? "TA · " : "Kelvin · ") + m.time + (taStatus(m) ? " · " + taStatus(m) : "") + "</div>").join("")
+    : '<div class="none">No texts yet. When Kelvin texts your TA, or your TA texts Kelvin, it shows up here.</div>';
+  $("taBody").scrollTop = $("taBody").scrollHeight;
+}
+function setLogView(v) {
+  logView = v;
+  document.querySelectorAll(".ltab").forEach(b => b.classList.toggle("on", b.dataset.view === v));
+  if (v === "ta") taUnread = 0;
+  render(); renderTa();
+}
+document.querySelectorAll(".ltab").forEach(b => b.onclick = () => setLogView(b.dataset.view));
+
 // ------------------------------------------------------------ rendering
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => switchLab(b.dataset.lab));
 function switchLab(v) {
@@ -729,7 +810,10 @@ function render() {
   $("logBody").innerHTML = rows.map(e =>
     '<li><div class="top"><span class="time">' + e.time + '</span><span class="chip ' + label[e.result][0] + '">' + label[e.result][1] + '</span></div>' +
     '<div class="what">' + e.what + '</div><div class="fx">' + e.fix + '</div></li>').join("");
-  $("emptyLog").style.display = rows.length ? "none" : "block";
+  const ta = logView === "ta";
+  $("emptyLog").style.display = ta || rows.length ? "none" : "block";
+  $("logBody").style.display = ta ? "none" : "";
+  $("taBody").hidden = !ta;
 
   $("dot").className = "dot" + (live ? " live" : "");
   $("connText").textContent = live ? "live from the lab bench" : "demo data (no backend)";

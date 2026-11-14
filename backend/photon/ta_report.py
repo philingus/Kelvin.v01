@@ -10,11 +10,24 @@ Settings come from backend/.env (never committed):
 Run photon/photon_test.py once to find PHOTON_TA_SPACE_ID and PHOTON_SENDER_ID.
 """
 import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 NEEDED = ("PHOTON_API_KEY", "PHOTON_PROJECT_ID", "PHOTON_TA_SPACE_ID", "PHOTON_SENDER_ID")
+
+# server.py sets this so the dashboard can show every TA text and whether it was delivered.
+# Called as on_event(direction "in"/"out", text, id, status, reason).
+on_event = None
+
+
+def _emit(*args):
+    if on_event:
+        try:
+            on_event(*args)
+        except Exception:
+            pass
 
 
 def photon_missing():
@@ -42,13 +55,52 @@ def _send(photon, text, reply_to=None):
     )
     if reply_to:
         body["parentMessageId"] = reply_to
-    photon.projects.send_message(
-        SendMessageInput(
-            path=SendMessagePath(id=os.environ["PHOTON_PROJECT_ID"]),
-            headers=SendMessageHeader.model_validate({"idempotency-key": str(uuid4())}),
-            body=SendMessageRequest(**body),
+    local = "k" + uuid4().hex[:10]
+    _emit("out", text, local, "sending", "")
+    try:
+        sent = photon.projects.send_message(
+            SendMessageInput(
+                path=SendMessagePath(id=os.environ["PHOTON_PROJECT_ID"]),
+                headers=SendMessageHeader.model_validate({"idempotency-key": str(uuid4())}),
+                body=SendMessageRequest(**body),
+            )
         )
-    )
+    except Exception as e:
+        _emit("out", text, local, "failed", type(e).__name__)
+        raise
+    _emit("out", text, local, "accepted", "")
+    try:
+        mid = _unwrap(sent).id
+        threading.Thread(target=_check_delivery, args=(mid, text, local), daemon=True).start()
+    except Exception:
+        pass
+
+
+def _unwrap(x):
+    while hasattr(x, "root") and not hasattr(x, "id"):
+        x = x.root
+    return x
+
+
+def _check_delivery(mid, text, local="", wait=8):
+    """'Accepted' only means Photon queued it. Ask a few seconds later whether the phone actually got it,
+    and once more if it's still on its way."""
+    from photon_api.rpc_generated import GetMessageInput, GetMessagePath
+    for delay in (wait, wait):
+        time.sleep(delay)
+        try:
+            with _client() as photon:
+                m = _unwrap(photon.projects.get_message(GetMessageInput(path=GetMessagePath(id=os.environ["PHOTON_PROJECT_ID"], messageId=mid))))
+            status = str(getattr(m, "status", "unknown"))
+            failure = getattr(m, "failure", None)
+            why = type(_unwrap(failure)).__name__.replace("Failure", "") if failure else ""
+            print(f"[Photon] text to TA \"{text[:40]}...\" is {status}" + (f" because {why}" if why else ""))
+            _emit("out", text, local, status, why)
+            if status in ("delivered", "failed"):
+                return
+        except Exception as e:
+            print(f"[Photon] couldn't check delivery ({type(e).__name__})")
+            return
 
 
 def send_ta_text(text: str):
@@ -78,24 +130,29 @@ def poll_ta(answer, every=2.0):
         try:
             with _client() as photon:
                 while True:
+                    # same query as photon_test.py, which Photon accepts; we pick out the TA's conversation below
                     query = {"createdSince": since, "direction": "received", "order": "asc", "pageSize": 100,
-                             "platform": "imessage", "spaceId": os.environ["PHOTON_TA_SPACE_ID"]}
+                             "platform": "imessage"}
                     for m in _pages(photon, query):
                         if m.id in seen:
                             continue
                         seen.add(m.id)
                         if getattr(m, "status", None) != "received" or m.sentBy.root.kind != "human":
                             continue
+                        if str(m.space.root.id) != os.environ["PHOTON_TA_SPACE_ID"]:
+                            continue            # someone other than the TA texted Kelvin
                         if not isinstance(m.content, TextContent) or not m.content.text.strip():
                             continue
                         text = m.content.text.strip()
                         print(f"[Photon] TA texted: {text}")
+                        _emit("in", text, m.id, "received", "")
                         reply = answer(text)
                         if reply:
                             _send(photon, reply, reply_to=m.id)
                     time.sleep(every)
         except Exception as e:          # bad Wi-Fi or a Photon hiccup: wait and keep going
-            print(f"[Photon] watching TA texts failed ({type(e).__name__}: {str(e)[:120]}), retrying in 5 s")
+            detail = getattr(e, "raw_body", "") or ""
+            print(f"[Photon] watching TA texts failed ({type(e).__name__}: {str(e)[:120]} {detail[:300]}), retrying in 5 s")
             if type(e).__name__ == "ValidationError":
                 # a message this SDK version can't read (an iMessage tapback, say) would fail every retry,
                 # so skip past it: only look at texts from now on
