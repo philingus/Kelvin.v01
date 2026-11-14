@@ -502,6 +502,13 @@ def quick_intent(q: str, lab: str = "", source: str = "student"):
             return {"type": "switch_lab", "lab": to}
     if re.search(r"\b(apply|go ahead|send it|do it|use (it|that|the fix))\b", s) and not measured:
         return {"type": "apply_fix"}
+    if source == "student" and (pending_fix.get(lab) or pending_fix.get("motor")) and not re.search(r"\d", s) \
+            and not re.search(r"^\W*(why|what|how|when|where|who|is|does|should|explain)\b", s):
+        # a fix is waiting, so "can you fix it", "fix the thing", "yeah let's do that" mean apply it
+        if re.search(r"\bfix\b|\bcorrect (it|that|this)\b", s) or \
+                re.search(r"^\W*(yes|yeah|yep|yup|sure|ok|okay|sounds good|please)\b", s) or \
+                re.search(r"\blet'?s (do|try|lower|raise|change) (it|that|this|the value|the setting)\b", s):
+            return {"type": "apply_fix"}
     return None
 
 
@@ -602,7 +609,7 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
             "If they are asking a question or chatting, action is null and you answer in say: at most three "
             "short sentences, plain words, no markdown, use the real numbers from the context when they help. "
             + ("Your answer is sent as a text message. " if source == "ta" else "Your answer is read out loud. ")
-            + "You cannot save files, send email, or do anything not listed above, so never claim to. "
+            + "You cannot save files, send email, close the dashboard, or do anything not listed above, so never claim to. "
             "If you don't know, say so.\n"
             'Reply with JSON only: {"say": "...", "action": null or one action object}\n'
             f"Live context: {json.dumps(context)}\n"
@@ -621,8 +628,14 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
             if not action and source == "ta":           # no AI: still give the TA a useful status text
                 say = status_line()
             elif not action:
-                say = ("I can't reach my AI right now. I can still apply a fix, undo, switch labs, "
-                       "change the speed, or show the report.")
+                waiting = pending_fix.get(lab)
+                if waiting:
+                    say = ("My connection is slow, so I'll keep it short. The suggested fix is "
+                           + ", ".join(f"{k} to {v:g}" for k, v in waiting.items())
+                           + ". Say apply it when you're ready.")
+                else:
+                    say = ("My connection is slow, so I'll keep it short. " + status_line()
+                           + " You can still ask me to apply a fix, undo, switch labs, change the speed, or show the report.")
     text = do_action(action, lab, source) if action else (say or "Sorry, I didn't catch that.")
     print(f"[{source}] {question} -> action={action} -> {text}")
     remember_event("chat", f"{'TA texted' if source == 'ta' else 'student said'}: {question!r}. Kelvin: {text}")
@@ -813,6 +826,8 @@ class MotorWatcher:
         step = self.target - self.start_speed
         if len(self.samples) < 25 or abs(step) < 5 or self.target == 0:
             return
+        if len(self.samples) < 0.75 * stepper["seconds"] * 50:
+            return                                       # cut short (stopped, or the speed was changed): not a fair test
         speeds = [s for s, _ in self.samples]
         motors = [m for _, m in self.samples]
         sign = 1 if step > 0 else -1
@@ -867,8 +882,9 @@ class MotorWatcher:
         issue, facts, fix = None, {}, None
         if over >= OVERSHOOT_ALERT:
             if settings["ki"] >= 1:     # with integral action, overshoot on this motor comes from ki (we measured it)
-                # On our MinSeg, ki at about 3x kp settles with ~2% overshoot at every motor speed we simulated.
-                new_ki = round(max(0.5, min(settings["ki"] / 3, settings["kp"] * 3)), 2)
+                # Measured on our MinSeg (Nov 14): with kp 1, ki 3 still overshot 11-21%, ki 1 overshot 1-6% but
+                # settled short, ki 1.5 overshot ~9%. So ki at about 1.5x kp is the one-step fix.
+                new_ki = round(max(0.5, min(settings["ki"] / 3, settings["kp"] * 1.5)), 2)
                 issue, facts, fix = "overshoot", {"over": over, "old": f"{settings['ki']:g}", "new": f"{new_ki:g}"}, {"ki": new_ki}
             else:
                 issue, facts, fix = "overshoot_kp", {"over": over}, {"kp": round(settings["kp"] * 0.35, 3)}

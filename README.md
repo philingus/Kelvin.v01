@@ -14,7 +14,7 @@ In an intro engineering lab, one TA covers a room of students. When a student's 
 
 | Kelvin sees | Kelvin says | Fix it proposes |
 |---|---|---|
-| Overshoot of 20% or more, with integral action on | ki is too high for kp, so it keeps pushing after the wheel reaches speed | ki down to about 3 times kp |
+| Overshoot of 20% or more, with integral action on | ki is too high for kp, so it keeps pushing after the wheel reaches speed | ki down to about 1.5 times kp (measured on our motor) |
 | Overshoot of 20% or more, no integral action | kp is too high | kp to about a third |
 | Wheel never reaches target | kp is too low | kp up by half |
 | Settles below target | needs integral action | more ki |
