@@ -732,12 +732,17 @@ class MotorWatcher:
         self.in_drag = False
         self.recover_count = 0
         self.disturbed = False     # this step had drag in it, so don't judge the student's settings on it
+        self.paused_until = 0.0    # ignore the board while it restarts
 
     def arm_verify(self):
         self.verify = True
         self.skip_next = True
 
     def add(self, target, speed, motor):
+        if time.time() < self.paused_until:
+            self.target, self.samples = None, []
+            self.settle_count, self.settled, self.drag_count, self.in_drag = 0, False, 0, False
+            return
         if self.target is None:
             self.target = target
         if target != self.target:
@@ -847,6 +852,23 @@ class MotorWatcher:
 motor_watch = MotorWatcher()
 
 
+MOTOR_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs",
+                         time.strftime("motor_%m%d_%H%M%S.csv"))
+_motor_log = {"f": None, "last_t": None}
+
+
+def log_motor(t, target, speed, motor):
+    try:                                   # every reading goes in backend/logs/, for tuning
+        if _motor_log["f"] is None:
+            os.makedirs(os.path.dirname(MOTOR_LOG), exist_ok=True)
+            _motor_log["f"] = open(MOTOR_LOG, "a", buffering=1)
+            _motor_log["f"].write("time_ms,target,speed,pwm,kp,ki,kd,flag\n")
+        _motor_log["f"].write(f"{t:.0f},{target:g},{speed:g},{motor:g},{settings['kp']:g},{settings['ki']:g},"
+                              f"{settings['kd']:g},{open_diag['motor']['issue'] if open_diag.get('motor') else ''}\n")
+    except OSError:
+        pass
+
+
 def on_motor_line(parts):
     # T,time_ms,target,speed,motor,tilt
     try:
@@ -854,6 +876,10 @@ def on_motor_line(parts):
         tilt = float(parts[5]) if len(parts) > 5 else 0.0
     except (ValueError, IndexError):
         return
+    if _motor_log["last_t"] is not None and t < _motor_log["last_t"] - 1000:
+        motor_watch.paused_until = time.time() + 1.5      # the board restarted; don't judge the restart
+    _motor_log["last_t"] = t
+    log_motor(t, target, speed, motor)
     send({"lab": "motor", "t": t, "target": target, "speed": speed, "motor": motor, "tilt": tilt})
     recent["motor"] = {"target": target, "speed": round(speed, 1), "motor_power": motor}
     motor_watch.add(target, speed, motor)
@@ -1059,26 +1085,55 @@ def on_line(line: str):
 # ---------------------------------------------------------------- real boards
 
 class SerialLink:
-    def __init__(self, port, baud=115200):
+    """One USB board. Survives being unplugged: says so once, then reconnects when it's plugged back in."""
+
+    def __init__(self, port, baud=115200, on_connect=None):
         import serial
+        self.serial, self.port, self.baud, self.on_connect = serial, port, baud, on_connect
         self.ser = serial.Serial(port, baud, timeout=1)
+        self.ok = True
         self.lock = threading.Lock()
         threading.Thread(target=self.read_loop, daemon=True).start()
         print(f"Connected to {port}")
+        if on_connect:
+            threading.Thread(target=on_connect, daemon=True).start()
+
+    def lost(self):
+        if self.ok:
+            self.ok = False
+            print(f"Lost the board on {self.port} (unplugged?). Plug it back in and I'll reconnect.")
+        try:
+            self.ser.close()
+        except Exception:
+            pass
 
     def read_loop(self):
         while True:
+            if not self.ok:
+                time.sleep(2)
+                try:
+                    self.ser = self.serial.Serial(self.port, self.baud, timeout=1)
+                    self.ok = True
+                    print(f"Reconnected to {self.port}")
+                    if self.on_connect:
+                        threading.Thread(target=self.on_connect, daemon=True).start()
+                except Exception:
+                    continue
             try:
                 raw = self.ser.readline()
                 if raw:
                     on_line(raw.decode(errors="ignore"))
-            except Exception as e:
-                print("Serial read error:", e)
-                time.sleep(1)
+            except Exception:
+                self.lost()
 
     def write(self, text: str):
+        if not self.ok:
+            return
         with self.lock:
-            self.ser.write((text.strip() + "\n").encode())
+            try:
+                self.ser.write((text.strip() + "\n").encode())
+            except Exception:
+                self.lost()
 
 
 # ---------------------------------------------------------------- fake boards
@@ -1299,13 +1354,21 @@ def main():
               "'out'/'in' to move the probe, 'hold 80' for a steady speed, 'ta <message>' to text as the TA.")
     else:
         if args.motor_port:
-            motor_link = SerialLink(args.motor_port)
-
             def send_settings_after_boot():
+                motor_watch.paused_until = time.time() + 4
                 time.sleep(2.5)          # the Mega restarts when the port opens; wait for it, then load our settings
                 motor_link.write(f"K,{settings['kp']},{settings['ki']},{settings['kd']}")
                 print(f"Sent settings to the robot: kp {settings['kp']:g}, ki {settings['ki']:g}, kd {settings['kd']:g}")
-            threading.Thread(target=send_settings_after_boot, daemon=True).start()
+            motor_link = SerialLink(args.motor_port, on_connect=send_settings_after_boot)
+
+            def stop_wheel():
+                try:
+                    motor_link.write("S,0")
+                    time.sleep(0.1)
+                except Exception:
+                    pass
+            import atexit
+            atexit.register(stop_wheel)          # Ctrl+C stops the wheel instead of leaving it spinning
         if args.cooling_port:
             SerialLink(args.cooling_port)
 

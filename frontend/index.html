@@ -282,7 +282,7 @@ const LABS = {
 
 // ------------------------------------------------------------ state
 const $ = id => document.getElementById(id);
-let lab = "motor", live = false, ws = null;
+let lab = "motor", live = false, wasLive = false, ws = null;
 let settings = { kp: 1.2, ki: 0.4, kd: 0.05 };
 let latest = { motor: {}, cooling: {} };
 const series = { motor: [], cooling: [] };
@@ -314,7 +314,9 @@ function handle(msg) {
   else if (msg.lab === "cooling") { latest.cooling = msg; push("cooling", { t: msg.t / 1000, a: msg.temp, b: msg.expected }); }
 }
 function push(which, p) {
-  const s = series[which]; s.push(p);
+  const s = series[which];
+  if (s.length && p.t < s[s.length - 1].t - 1) { s.length = 0; marks[which].length = 0; }   // board restarted, its clock went back to 0
+  s.push(p);
   const cutoff = p.t - WINDOW_S[which];
   while (s.length && s[0].t < cutoff) s.shift();
   while (marks[which].length && marks[which][0].t < cutoff) marks[which].shift();
@@ -659,7 +661,7 @@ function markUndone() {
 function connect() {
   try { ws = new WebSocket(WS_URL); } catch (e) { return setTimeout(connect, 2000); }
   ws.onopen = () => {
-    live = true;
+    live = true; wasLive = true;
     for (const k of ["motor", "cooling"]) { series[k].length = 0; marks[k].length = 0; state[k] = "stable"; message[k] = ""; fixes[k] = null; latest[k] = {}; }
     log.length = 0; taMsgs.length = 0; taUnread = 0; render(); renderTa();
   };
@@ -718,7 +720,7 @@ const sim = {
     this.lastOver = over;
   },
 };
-setInterval(() => { if (!live) sim.tick(0.02); }, 20);
+setInterval(() => { if (!live && !wasLive) sim.tick(0.02); }, 20);   // never fake data once we have been live
 $("demoBtn").onclick = () => {
   if (lab === "motor") sim.loadBad(); else { sim.probeOut = !sim.probeOut; render(); }
 };
@@ -821,7 +823,7 @@ function render() {
   $("taBody").hidden = !ta;
 
   $("dot").className = "dot" + (live ? " live" : "");
-  $("connText").textContent = live ? "live from the lab bench" : "demo data (no backend)";
+  $("connText").textContent = live ? "live from the lab bench" : wasLive ? "backend stopped, reconnecting..." : "demo data (no backend)";
   $("demoRow").style.display = live ? "none" : "flex";
   $("demoBtn").textContent = lab === "motor" ? "Demo: load a bad controller" : (sim.probeOut ? "Demo: put the probe back" : "Demo: pull the probe out");
 }
