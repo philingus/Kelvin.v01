@@ -10,7 +10,7 @@
 <style>
   :root {
     --paper: #f6f1e4; --paper-deep: #efe7d3; --rule: #d9cfb6; --grid: rgba(70, 110, 160, .10);
-    --ink: #1d2a44; --ink-soft: #55607a; --pencil: #8a8471;
+    --ink: #1d2a44; --ink-soft: #55607a; --pencil: #8a8471; --card: #fffdf6;
     --blue: #2457a6; --red: #c0392b; --red-bg: #f7dcd4; --green: #2f7d4f; --green-bg: #dcefdc;
     --amber: #b9770e; --amber-bg: #f8ead0; --margin: #e08b8b;
     --serif: "Fraunces", Georgia, "Times New Roman", serif;
@@ -19,174 +19,215 @@
     --mono: "IBM Plex Mono", Consolas, monospace;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; }
+  html, body { margin: 0; height: 100%; }
   body {
-    color: var(--ink); font-family: var(--sans); font-size: 17px;
+    color: var(--ink); font-family: var(--sans); font-size: 15px;
     background-color: var(--paper);
-    background-image:
-      linear-gradient(var(--grid) 1px, transparent 1px),
-      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
     background-size: 24px 24px;
   }
-  .page { max-width: 1180px; margin: 0 auto; padding: 22px 28px 40px 64px; position: relative; }
-  .page::before { content: ""; position: absolute; left: 36px; top: 0; bottom: 0; width: 2px; background: var(--margin); opacity: .55; }
+  /* whole dashboard fits one screen, no scrolling */
+  .app { height: 100vh; min-height: 600px; display: flex; flex-direction: column; gap: 12px; padding: 14px 22px 14px 52px; position: relative; max-width: 1700px; margin: 0 auto; }
+  .app::before { content: ""; position: absolute; left: 30px; top: 0; bottom: 0; width: 2px; background: var(--margin); opacity: .55; }
 
-  /* header */
-  header { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; border-bottom: 2px solid var(--ink); padding-bottom: 12px; }
-  .brand h1 { font-family: var(--serif); font-weight: 900; font-size: 54px; line-height: .9; margin: 0; letter-spacing: -1px; }
-  .brand .sub { font-family: var(--hand); font-size: 26px; color: var(--blue); margin-top: 2px; transform: rotate(-1deg); display: inline-block; }
+  header { display: flex; align-items: center; gap: 22px; border-bottom: 2px solid var(--ink); padding-bottom: 8px; }
+  .brand { display: flex; align-items: baseline; gap: 14px; }
+  .brand h1 { font-family: var(--serif); font-weight: 900; font-size: 36px; line-height: 1; margin: 0; letter-spacing: -.5px; }
+  .brand .sub { font-family: var(--hand); font-size: 21px; color: var(--blue); }
+  .tabs { display: flex; gap: 6px; }
+  .tab { font: 600 14px var(--sans); color: var(--ink-soft); background: var(--paper-deep); border: 1.5px solid var(--rule); border-radius: 999px; padding: 6px 14px; cursor: pointer; }
+  .tab.on { background: var(--ink); color: var(--card); border-color: var(--ink); }
   .spacer { flex: 1; }
-  .conn { font-family: var(--mono); font-size: 13px; color: var(--ink-soft); display: flex; align-items: center; gap: 8px; padding-bottom: 6px; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 3px var(--amber-bg); }
+  .conn { font-family: var(--mono); font-size: 12px; color: var(--ink-soft); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 3px var(--amber-bg); }
   .dot.live { background: var(--green); box-shadow: 0 0 0 3px var(--green-bg); }
 
-  /* notebook tabs */
-  .tabs { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
-  .tab { font: 600 16px var(--sans); color: var(--ink-soft); background: var(--paper-deep); border: 1.5px solid var(--rule);
-         border-bottom: none; border-radius: 10px 10px 0 0; padding: 9px 18px; cursor: pointer; }
-  .tab.on { background: #fffdf6; color: var(--ink); border-color: var(--ink); position: relative; top: 1.5px; }
-  .sheet { background: #fffdf6; border: 1.5px solid var(--ink); border-radius: 0 12px 12px 12px; padding: 22px 24px 24px; }
-  .explain { font-size: 18px; color: var(--ink-soft); margin: 0 0 18px; }
-  .explain b { color: var(--ink); font-weight: 600; }
-
-  /* verdict banner */
-  .verdict { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 22px;
-             border: 2.5px solid var(--green); background: var(--green-bg); border-radius: 14px; padding: 16px 22px; transition: background .3s, border-color .3s; }
-  .stamp { font-family: var(--serif); font-weight: 900; font-size: 34px; letter-spacing: 3px; color: var(--green);
-           border: 4px solid currentColor; border-radius: 8px; padding: 4px 16px; transform: rotate(-4deg); white-space: nowrap;
-           text-transform: uppercase; }
-  .verdict .what { font-family: var(--serif); font-size: 25px; font-weight: 500; line-height: 1.25; }
-  .verdict .count { text-align: center; font-family: var(--sans); }
-  .verdict .count b { display: block; font-family: var(--serif); font-size: 40px; line-height: 1; }
-  .verdict .count span { font-size: 13px; color: var(--ink-soft); }
+  /* verdict bar */
+  .verdict { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 20px; border: 2.5px solid var(--green); background: var(--green-bg);
+             border-radius: 12px; padding: 10px 20px; transition: background .3s, border-color .3s; }
+  .stamp { font-family: var(--serif); font-weight: 900; font-size: 26px; letter-spacing: 3px; color: var(--green); border: 3.5px solid currentColor; border-radius: 7px;
+           padding: 2px 14px; transform: rotate(-3deg); white-space: nowrap; text-transform: uppercase; }
+  .verdict .what { font-family: var(--serif); font-size: 21px; font-weight: 500; line-height: 1.25; }
+  .verdict .count { text-align: center; } .verdict .count b { display: block; font-family: var(--serif); font-size: 30px; line-height: 1; }
+  .verdict .count span { font-size: 12px; color: var(--ink-soft); }
   .verdict.mistake { border-color: var(--red); background: var(--red-bg); } .verdict.mistake .stamp { color: var(--red); animation: thunk .35s ease-out; }
   .verdict.fixing { border-color: var(--amber); background: var(--amber-bg); } .verdict.fixing .stamp { color: var(--amber); }
   .verdict.fixed .stamp { animation: thunk .35s ease-out; }
-  @keyframes thunk { 0% { transform: rotate(-4deg) scale(1.6); opacity: 0; } 70% { transform: rotate(-4deg) scale(.95); opacity: 1; } 100% { transform: rotate(-4deg) scale(1); } }
+  @keyframes thunk { 0% { transform: rotate(-3deg) scale(1.6); opacity: 0; } 70% { transform: rotate(-3deg) scale(.95); opacity: 1; } 100% { transform: rotate(-3deg) scale(1); } }
 
-  /* readings */
-  .readings { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 18px 0; }
-  .reading { border-top: 2px solid var(--ink); padding-top: 8px; }
-  .reading .k { font-size: 14px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 1px; }
-  .reading .v { font-family: var(--serif); font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
-  .reading .v small { font-size: 20px; color: var(--ink-soft); font-weight: 500; }
-  .reading .hint { font-family: var(--hand); font-size: 21px; color: var(--blue); line-height: 1; }
-
-  /* chart */
-  .chart { position: relative; border: 1.5px solid var(--rule); border-radius: 10px; background: rgba(255,255,255,.55); padding: 10px 10px 4px; }
-  .legend { display: flex; gap: 22px; font-size: 15px; color: var(--ink-soft); padding: 2px 8px 6px; flex-wrap: wrap; }
-  .key { display: inline-block; width: 26px; height: 0; border-top: 3px solid var(--blue); vertical-align: middle; margin-right: 8px; }
+  /* main area: graph on the left, Kelvin on the right */
+  .main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 14px; }
+  .panel { background: var(--card); border: 1.5px solid var(--ink); border-radius: 12px; }
+  .left { display: flex; flex-direction: column; padding: 12px 16px 8px; min-height: 0; }
+  .explain { font-size: 14px; color: var(--ink-soft); margin: 0 0 8px; }
+  .explain b { color: var(--ink); font-weight: 600; }
+  .readings { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .reading { border-top: 2px solid var(--ink); padding-top: 4px; display: grid; grid-template-columns: auto 1fr; column-gap: 10px; align-items: baseline; }
+  .reading .k { grid-column: 1 / 3; font-size: 11px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 1px; }
+  .reading .v { font-family: var(--serif); font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .reading .v small { font-size: 15px; color: var(--ink-soft); font-weight: 500; }
+  .reading .hint { font-family: var(--hand); font-size: 18px; color: var(--blue); line-height: 1; }
+  .legend { display: flex; gap: 20px; font-size: 13px; color: var(--ink-soft); padding: 10px 2px 0; }
+  .key { display: inline-block; width: 24px; height: 0; border-top: 3px solid var(--blue); vertical-align: middle; margin-right: 6px; }
   .key.target { border-top: 2.5px dashed var(--pencil); }
-  canvas { width: 100%; height: 300px; display: block; }
+  .plot { flex: 1; min-height: 160px; position: relative; }
+  .plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 
-  /* kelvin's note + fix */
-  .row2 { display: grid; grid-template-columns: 1.35fr 1fr; gap: 18px; margin-top: 18px; }
-  .note { position: relative; background: #fff8d8; border: 1.5px solid #e2cf7d; border-radius: 4px 14px 14px 14px; padding: 18px 20px 18px;
-          box-shadow: 3px 4px 0 rgba(29, 42, 68, .08); }
-  .note .who { font-family: var(--hand); font-size: 26px; color: var(--blue); line-height: 1; margin-bottom: 6px; }
-  .note .said { font-family: var(--serif); font-size: 23px; line-height: 1.35; }
-  .rx { border: 1.5px dashed var(--ink); border-radius: 14px; padding: 16px 20px; display: flex; flex-direction: column; justify-content: space-between; gap: 12px; }
-  .rx h3 { margin: 0; font-family: var(--serif); font-size: 20px; }
-  .rx .change { font-family: var(--mono); font-size: 20px; }
+  .right { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .note { background: #fff8d8; border: 1.5px solid #e2cf7d; border-radius: 4px 12px 12px 12px; padding: 12px 16px; box-shadow: 3px 4px 0 rgba(29, 42, 68, .08); }
+  .note .who { font-family: var(--hand); font-size: 22px; color: var(--blue); line-height: 1; margin-bottom: 4px; }
+  .note .said { font-family: var(--serif); font-size: 18px; line-height: 1.35; }
+  .asked { font-size: 13px; color: var(--ink-soft); margin-bottom: 6px; font-style: italic; }
+  .asked:empty { display: none; }
+  .ask { display: flex; gap: 6px; }
+  .ask input { flex: 1; min-width: 0; font: 15px var(--sans); color: var(--ink); background: var(--card); border: 1.5px solid var(--ink); border-radius: 9px; padding: 8px 10px; }
+  .ask input:focus { outline: 3px solid rgba(36, 87, 166, .25); }
+  .ask .mic { background: var(--card); border: 1.5px solid var(--ink); padding: 0 10px; font-size: 16px; }
+  .ask .mic.on { background: var(--red); border-color: var(--red); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 5px var(--red-bg); } }
+  .ask .askBtn { background: var(--blue); color: #fff; border: 2px solid var(--blue); padding: 0 14px; }
+  .rx { border: 1.5px dashed var(--ink); border-radius: 12px; padding: 10px 14px; background: var(--card); }
+  .rx .head { display: flex; justify-content: space-between; align-items: baseline; }
+  .rx h3 { margin: 0; font-family: var(--serif); font-size: 16px; }
+  .rx .settings { font-size: 11px; color: var(--ink-soft); font-family: var(--mono); }
+  .rx .body { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
+  .rx #rxBody { flex: 1; }
+  .rx .change { font-family: var(--mono); font-size: 18px; }
   .rx .change .old { text-decoration: line-through; color: var(--pencil); }
-  .rx .change .arrow { color: var(--ink-soft); padding: 0 6px; }
+  .rx .change .arrow { color: var(--ink-soft); padding: 0 5px; }
   .rx .change .new { color: var(--green); font-weight: 600; }
-  .rx .empty { color: var(--ink-soft); font-size: 16px; }
-  .rx .settings { font-size: 14px; color: var(--ink-soft); font-family: var(--mono); }
-  button { font: 600 16px var(--sans); cursor: pointer; border-radius: 10px; }
-  .apply { background: var(--ink); color: #fffdf6; border: 2px solid var(--ink); padding: 12px 18px; font-size: 18px; }
-  .apply:hover { background: #2b3c60; }
-  .apply:disabled { opacity: .35; cursor: not-allowed; }
+  .rx .empty { color: var(--ink-soft); font-size: 14px; }
+  button { font: 600 15px var(--sans); cursor: pointer; border-radius: 9px; }
+  .apply { background: var(--ink); color: var(--card); border: 2px solid var(--ink); padding: 9px 16px; white-space: nowrap; }
+  .apply:hover { background: #2b3c60; } .apply:disabled { opacity: .3; cursor: not-allowed; }
 
-  /* lab log */
-  .log { margin-top: 24px; }
-  .log h2 { font-family: var(--serif); font-size: 28px; margin: 0 0 4px; display: flex; align-items: baseline; gap: 12px; }
-  .log h2 span { font-family: var(--hand); font-size: 22px; color: var(--blue); font-weight: 500; }
-  table { width: 100%; border-collapse: collapse; font-size: 16px; }
-  th { text-align: left; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-soft); font-weight: 600; padding: 8px 10px; border-bottom: 2px solid var(--ink); }
-  td { padding: 11px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
-  td.time { font-family: var(--mono); font-size: 14px; color: var(--ink-soft); white-space: nowrap; }
-  .chip { display: inline-block; font-weight: 600; font-size: 13px; padding: 3px 10px; border-radius: 999px; border: 1.5px solid; white-space: nowrap; }
+  .log { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 14px 8px; }
+  .log h2 { font-family: var(--serif); font-size: 20px; margin: 0 0 4px; display: flex; align-items: baseline; gap: 10px; }
+  .log h2 span { font-family: var(--hand); font-size: 18px; color: var(--blue); font-weight: 500; }
+  .log ul { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 0; }
+  .log li { border-top: 1px solid var(--rule); padding: 7px 0; }
+  .log .top { display: flex; justify-content: space-between; align-items: center; }
+  .log .time { font-family: var(--mono); font-size: 12px; color: var(--ink-soft); }
+  .log .what { font-weight: 600; font-size: 14px; margin-top: 2px; }
+  .log .fx { font-size: 13px; color: var(--ink-soft); }
+  .chip { display: inline-block; font-weight: 600; font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1.5px solid; white-space: nowrap; }
   .chip.open { color: var(--red); background: var(--red-bg); }
-  .chip.applied { color: var(--amber); background: var(--amber-bg); }
+  .chip.applied, .chip.partial { color: var(--amber); background: var(--amber-bg); }
   .chip.fixed { color: var(--green); background: var(--green-bg); }
-  .chip.partial { color: var(--amber); background: var(--amber-bg); }
-  .emptylog { font-family: var(--hand); font-size: 24px; color: var(--pencil); padding: 14px 10px; }
+  .emptylog { font-family: var(--hand); font-size: 20px; color: var(--pencil); padding: 6px 0; }
+  .foot { display: flex; gap: 10px; align-items: center; border-top: 1px solid var(--rule); padding-top: 8px; margin-top: 4px; font-size: 13px; color: var(--ink-soft); }
+  .foot select { max-width: 170px; font: 13px var(--sans); color: var(--ink); background: var(--card); border: 1.5px solid var(--rule); border-radius: 7px; padding: 3px 4px; }
+  .foot label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  .demo { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .demo button { background: transparent; border: 1.5px solid var(--ink-soft); color: var(--ink); padding: 5px 10px; font-size: 13px; }
 
-  /* footer controls */
-  .foot { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; margin-top: 18px; font-size: 15px; color: var(--ink-soft); }
-  .foot label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
-  .demo { margin-left: auto; display: flex; gap: 10px; align-items: center; }
-  .demo button { background: transparent; border: 1.5px solid var(--ink-soft); color: var(--ink); padding: 8px 14px; }
-
-  @media (max-width: 860px) {
-    .page { padding-left: 22px; } .page::before { display: none; }
-    .verdict { grid-template-columns: 1fr; text-align: left; }
-    .readings, .row2 { grid-template-columns: 1fr; }
+  .chip.undone { color: var(--ink-soft); background: var(--paper-deep); }
+  .repBtn { margin-left: auto; font: 600 12.5px var(--sans); background: transparent; border: 1.5px solid var(--ink); color: var(--ink); padding: 3px 10px; border-radius: 7px; }
+  .repBtn:hover { background: var(--ink); color: var(--card); }
+  .report { position: fixed; inset: 0; background: rgba(29, 42, 68, .45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; }
+  .report[hidden] { display: none; }
+  .rsheet { background: var(--card); border: 1.5px solid var(--ink); border-radius: 14px; max-width: 860px; width: 100%; max-height: 92vh; overflow: auto; padding: 22px 28px;
+            background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size: 24px 24px; }
+  .rhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 2px solid var(--ink); padding-bottom: 10px; margin-bottom: 12px; }
+  .rhead h2 { font-family: var(--serif); font-size: 32px; margin: 0; }
+  .rdate { font-family: var(--mono); font-size: 13px; color: var(--ink-soft); }
+  .ractions { display: flex; gap: 8px; }
+  .rprint { background: var(--ink); color: var(--card); border: 2px solid var(--ink); padding: 8px 14px; }
+  .rclose { background: transparent; border: 1.5px solid var(--ink); color: var(--ink); padding: 8px 14px; }
+  .rlabel { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-soft); margin: 14px 0 6px; font-weight: 600; }
+  .rsummary { font-family: var(--serif); font-size: 19px; line-height: 1.45; margin: 0; }
+  .rstats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 14px; }
+  .rstats div { border-top: 2px solid var(--ink); padding-top: 4px; font-size: 12px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: .5px; }
+  .rstats b { display: block; font-family: var(--serif); font-size: 24px; color: var(--ink); text-transform: none; letter-spacing: 0; }
+  .rchart { width: 100%; border: 1.5px solid var(--rule); border-radius: 8px; background: #fff; }
+  .rtable { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .rtable th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-soft); border-bottom: 2px solid var(--ink); padding: 6px 8px; }
+  .rtable td { border-bottom: 1px solid var(--rule); padding: 7px 8px; vertical-align: top; }
+  .rfoot { font-family: var(--hand); font-size: 20px; color: var(--blue); margin-top: 14px; }
+  @media print {
+    body { background: #fff; }
+    .app { display: none !important; }
+    .report { position: static; background: none; padding: 0; display: block; }
+    .rsheet { border: none; max-height: none; overflow: visible; box-shadow: none; background-image: none; padding: 0; }
+    .ractions { display: none; }
+  }
+  @media (max-width: 980px) {
+    .app { height: auto; padding-left: 18px; } .app::before { display: none; }
+    .main { grid-template-columns: 1fr; } .plot { height: 280px; flex: none; }
+    header { flex-wrap: wrap; } .verdict { grid-template-columns: 1fr; }
   }
 </style>
 </head>
 <body>
-<div class="page">
+<div class="app">
   <header>
-    <div class="brand">
-      <h1>Kelvin</h1>
-      <div class="sub">your lab partner, catching mistakes as they happen</div>
+    <div class="brand"><h1>Kelvin</h1><div class="sub">your lab partner, catching mistakes as they happen</div></div>
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-lab="motor" role="tab">Motor control lab</button>
+      <button class="tab" data-lab="cooling" role="tab">Cooling lab</button>
     </div>
     <div class="spacer"></div>
     <div class="conn"><span class="dot" id="dot"></span><span id="connText">demo data (no backend)</span></div>
   </header>
 
-  <div class="tabs" role="tablist">
-    <button class="tab on" data-lab="motor" role="tab">Motor control lab</button>
-    <button class="tab" data-lab="cooling" role="tab">Cooling lab</button>
+  <div class="verdict" id="verdict">
+    <div class="stamp" id="stamp">Stable</div>
+    <div class="what" id="verdictText">Everything matches what physics predicts.</div>
+    <div class="count"><b id="caught">0</b><span>mistakes caught</span></div>
   </div>
 
-  <div class="sheet">
-    <p class="explain" id="explain"></p>
-
-    <div class="verdict" id="verdict">
-      <div class="stamp" id="stamp">Stable</div>
-      <div class="what" id="verdictText">Everything matches what physics predicts.</div>
-      <div class="count"><b id="caught">0</b><span>mistakes caught</span></div>
-    </div>
-
-    <div class="readings" id="readings"></div>
-
-    <div class="chart">
+  <div class="main">
+    <div class="panel left">
+      <p class="explain" id="explain"></p>
+      <div class="readings" id="readings"></div>
       <div class="legend" id="legend"></div>
-      <canvas id="chart"></canvas>
+      <div class="plot"><canvas id="chart"></canvas></div>
     </div>
 
-    <div class="row2">
+    <div class="right">
       <div class="note">
+        <div class="asked" id="asked"></div>
         <div class="who">Kelvin says:</div>
         <div class="said" id="said">Watching the experiment. I'll speak up the moment something looks wrong.</div>
       </div>
+      <form class="ask" id="askForm" autocomplete="off">
+        <button type="button" class="mic" id="micBtn" title="Talk to Kelvin hands-free">🎤</button>
+        <input id="askInput" placeholder="Ask Kelvin about your experiment…">
+        <button type="submit" class="askBtn">Ask</button>
+      </form>
       <div class="rx">
-        <h3>Suggested fix</h3>
-        <div id="rxBody"><div class="empty">Nothing to fix right now.</div></div>
-        <div class="settings" id="settingsLine"></div>
-        <button class="apply" id="applyBtn" disabled>Apply fix</button>
+        <div class="head"><h3>Suggested fix</h3><div class="settings" id="settingsLine"></div></div>
+        <div class="body"><div id="rxBody"><div class="empty">Nothing to fix right now.</div></div><button class="apply" id="applyBtn" disabled>Apply fix</button></div>
       </div>
-    </div>
-
-    <div class="log">
-      <h2>Lab log <span>every mistake, every fix</span></h2>
-      <table>
-        <thead><tr><th style="width:90px">Time</th><th>What went wrong</th><th>Fix</th><th style="width:130px">Result</th></tr></thead>
-        <tbody id="logBody"></tbody>
-      </table>
-      <div class="emptylog" id="emptyLog">No mistakes yet. Nice work.</div>
-    </div>
-
-    <div class="foot">
-      <label><input type="checkbox" id="voice" checked> Speak out loud</label>
-      <div class="demo" id="demoRow"><span>Demo:</span><button id="demoBtn"></button></div>
+      <div class="panel log">
+        <h2>Lab log <span>every mistake, every fix</span><button class="repBtn" id="reportBtn" type="button">Report</button></h2>
+        <div class="emptylog" id="emptyLog">No mistakes yet. Nice work.</div>
+        <ul id="logBody"></ul>
+        <div class="foot">
+          <label><input type="checkbox" id="voice" checked> Voice</label><select id="voiceSel" title="Pick Kelvin's voice"></select>
+          <div class="demo" id="demoRow"><button id="demoBtn"></button></div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
 
+<div class="report" id="report" hidden>
+  <div class="rsheet">
+    <div class="rhead">
+      <div><h2>Lab report</h2><div class="rdate" id="rDate"></div></div>
+      <div class="ractions"><button type="button" class="rprint" id="rPrint">Save as PDF / Print</button><button type="button" class="rclose" id="rClose">Close</button></div>
+    </div>
+    <div class="rlabel">Kelvin's summary</div>
+    <p class="rsummary" id="rSummary"></p>
+    <div class="rstats" id="rStats"></div>
+    <div class="rlabel">The run</div>
+    <img class="rchart" id="rChart" alt="Chart of the run">
+    <div class="rlabel">Everything Kelvin logged</div>
+    <table class="rtable"><thead><tr><th>Time</th><th>Lab</th><th>What happened</th><th>Fix</th><th>Result</th></tr></thead><tbody id="rRows"></tbody></table>
+    <div class="rfoot">Made by Kelvin, your lab partner.</div>
+  </div>
+</div>
 <script>
 // ------------------------------------------------------------ config
 const WS_URL = "ws://localhost:8000/ws";
@@ -220,6 +261,12 @@ let fixedTimer = null;
 // ------------------------------------------------------------ incoming messages (README format)
 function handle(msg) {
   if (msg.type === "diagnosis") return onDiagnosis(msg);
+  if (msg.type === "answer") return onAnswer(msg);
+  if (msg.type === "applied") return markApplied(msg.fix || {}, msg.before);
+  if (msg.type === "fix_update") { fixes[msg.lab || "motor"] = msg.fix; return render(); }
+  if (msg.type === "undone") return markUndone();
+  if (msg.type === "action" && msg.action === "switch_lab") return switchLab(msg.lab === "cooling" ? "cooling" : "motor");
+  if (msg.type === "report") return showReport(msg);
   if (msg.type === "settings") { settings = { kp: +msg.kp, ki: +msg.ki, kd: +msg.kd }; return render(); }
   if (msg.lab === "motor") { latest.motor = msg; push("motor", { t: msg.t / 1000, a: msg.speed, b: msg.target }); }
   else if (msg.lab === "cooling") { latest.cooling = msg; push("cooling", { t: msg.t / 1000, a: msg.temp, b: msg.expected }); }
@@ -237,6 +284,7 @@ function onDiagnosis(d) {
   const L = d.lab || lab;
   if (L !== lab) switchLab(L);
   const good = d.issue === "ok";
+  if (typeof asked !== "undefined") asked[L] = "";
   message[L] = d.text || "";
   if (good) {
     state[L] = "fixed";
@@ -272,24 +320,233 @@ function shortMark(d) {
 const handFix = d => d.issue === "probe_out" ? "Put the probe back in the water" : "Check the setup by hand";
 const fixText = f => Object.keys(f).map(k => k + " " + (+settings[k] || 0).toFixed(2) + " → " + (+f[k]).toFixed(2)).join(", ");
 
+let voicePick = null, lastSaid = "", lastSaidAt = 0, utter = null;
+const MALE_PREFS = [/Andrew.*Natural/i, /Brian.*Natural/i, /Guy.*Natural/i, /Christopher.*Natural/i, /Eric.*Natural/i, /Davis.*Natural/i,
+                    /Natural/i, /Google UK English Male/i, /Daniel/i, /Mark/i, /David/i];
+function englishVoices() {
+  const all = (window.speechSynthesis && speechSynthesis.getVoices()) || [];
+  const en = all.filter(v => /^en/i.test(v.lang || "") || /English/i.test(v.name));
+  return en.length ? en : all;
+}
+function pickVoice() {
+  const en = englishVoices();
+  let saved = null; try { saved = localStorage.getItem("kelvinVoice"); } catch (e) {}
+  voicePick = en.find(v => v.name === saved) || null;
+  if (!voicePick) for (const p of MALE_PREFS) { const v = en.find(v => p.test(v.name)); if (v) { voicePick = v; break; } }
+  if (!voicePick) voicePick = en[0] || null;
+  const sel = $("voiceSel"); if (!sel) return;
+  sel.innerHTML = en.length
+    ? en.map(v => '<option value="' + v.name + '"' + (v === voicePick ? " selected" : "") + ">" +
+        v.name.replace(/^(Microsoft|Google)\s+/, "").replace(/\s*-\s*English.*$/, "").replace(" Online", "") + "</option>").join("")
+    : "<option>Loading voices…</option>";
+  return en.length;
+}
+if (window.speechSynthesis) {
+  pickVoice();
+  speechSynthesis.onvoiceschanged = pickVoice;
+  // Edge loads its voices late, so keep checking for a few seconds
+  let tries = 0; const poll = setInterval(() => { if (pickVoice() || ++tries > 40) clearInterval(poll); }, 250);
+  $("voiceSel").addEventListener("mousedown", pickVoice);
+} else { $("voiceSel").innerHTML = "<option>No voices in this browser</option>"; }
+$("voiceSel").onchange = e => {
+  voicePick = englishVoices().find(v => v.name === e.target.value) || voicePick;
+  try { localStorage.setItem("kelvinVoice", e.target.value); } catch (err) {}
+  lastSaid = ""; speak("Hi, I'm Kelvin. I'll tell you when something in your lab goes wrong.");
+};
 function speak(text) {
   if (!text || !$("voice").checked || !window.speechSynthesis) return;
-  try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); u.rate = 1.02; speechSynthesis.speak(u); } catch (e) {}
+  const now = Date.now();
+  if (text === lastSaid && now - lastSaidAt < 15000) return;   // never say the same line twice
+  lastSaid = text; lastSaidAt = now;
+  const spoken = text.replace(/\bkp\b/gi, "K P").replace(/\bki\b/gi, "K I").replace(/\bkd\b/gi, "K D");
+  try {
+    if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
+    setTimeout(() => {
+      utter = new SpeechSynthesisUtterance(spoken);       // kept in a variable so Chrome doesn't drop it mid-sentence
+      if (voicePick) utter.voice = voicePick;
+      utter.rate = 1.0; utter.pitch = 0.95; utter.volume = 0.9;
+      quietUntil = Date.now() + 1500 + spoken.split(/\s+/).length * 450;   // rough speaking time, in case onend never fires
+      utter.onend = utter.onerror = () => { quietUntil = Date.now() + 700; };
+      speechSynthesis.speak(utter);
+    }, 120);
+  } catch (e) {}
+}
+
+
+// ------------------------------------------------------------ ask Kelvin
+const asked = { motor: "", cooling: "" };
+function onAnswer(a) {
+  asked[lab] = "You asked: " + a.question;
+  message[lab] = a.text;
+  render(); speak(a.text);
+}
+function askKelvin(q) {
+  q = (q || "").trim(); if (!q) return;
+  $("askInput").value = "";
+  asked[lab] = "You asked: " + q; message[lab] = "Thinking…"; render();
+  if (live && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "ask", question: q, lab }));
+  else setTimeout(() => onAnswer({ question: q, text: demoCommand(q) || demoAnswer() }), 500);
+}
+function demoCommand(q) {
+  const s = q.toLowerCase();
+  const rel = s.match(/\b(third|half|quarter|double|twice)\b/);
+  if (/\b(undo|revert|put it back|change it back)\b|\bgo back\b(?!\s+to\b)/.test(s)) {
+    if (!demoUndo.length) return "There's nothing to undo yet.";
+    const prev = demoUndo.pop(); settings = prev; sim.kp = prev.kp; markUndone();
+    return "Undone. We're back to kp " + (+prev.kp).toFixed(2) + ".";
+  }
+  if (/\b(show|give|make|create|generate|send|open|write|get|need|want|see)\b.*\b(report|summary|recap)\b|\bsummari[sz]e\b/.test(s)) {
+    showReport({}); return "Here's your lab report. You can save it as a PDF.";
+  }
+  const sw = s.match(/\b(switch|go|change|move|show|open|take me)\b.*\b(cooling|cup|temperature|water|motor|wheel|robot)\b/);
+  if (sw && !rel && !/\d/.test(s)) {
+    const to = /cooling|cup|temperature|water/.test(sw[2]) ? "cooling" : "motor";
+    if (to !== lab) { switchLab(to); return to === "cooling" ? "Here's the cooling lab." : "Here's the motor lab."; }
+  }
+  if (rel) {
+    const base = fixes.motor && fixes.motor.kp !== undefined ? fixes.motor.kp : settings.kp;
+    const kp = +(base * ({ third: 1 / 3, half: 0.5, quarter: 0.25, double: 2, twice: 2 })[rel[1]]).toFixed(2);
+    if (/\bapply\b/.test(s)) { demoApply({ kp }); return "Done. kp " + kp + " is on the robot. I'll watch the next run."; }
+    fixes.motor = { kp }; render(); return "Okay, the suggested fix is now kp " + kp + ". Say apply it when you're ready.";
+  }
+  const setkp = s.match(/\b(set|change|make|put|use)\b.*\bk ?p\b\D{0,12}?(\d+(\.\d+)?)/);
+  if (setkp) {
+    const kp = +setkp[2];
+    if (kp <= 0 || kp > 20) return "kp " + kp + " is outside the safe range of 0.01 to 20, so I left it alone.";
+    if (/\bapply\b/.test(s)) { demoApply({ kp }); return "Done. kp " + kp + " is on the robot."; }
+    fixes.motor = { kp }; render(); return "Okay, the suggested fix is now kp " + kp + ". Say apply it when you're ready.";
+  }
+  if (/\b(apply|go ahead|send it|do it|use (it|that|the fix))\b/.test(s)) {
+    if (!fixes.motor) return "There's no fix waiting right now.";
+    const f = fixes.motor, what = Object.keys(f).map(k => k + " " + f[k]).join(", ");
+    demoApply(f); return "Done. " + what + " is on the robot. I'll watch the next run.";
+  }
+  return null;
+}
+function demoAnswer() {
+  const m = latest.motor, c = latest.cooling;
+  if (state[lab] === "mistake") return "Right now the problem is this: " + message[lab].replace("Thinking…", "");
+  if (lab === "motor" && m.speed !== undefined)
+    return "Things look fine. The wheel is at " + Math.round(m.speed) + " and the target is " + Math.round(m.target) + ". This is demo data, connect the backend for real answers.";
+  if (lab === "cooling" && c.temp !== undefined)
+    return "The water is at " + c.temp.toFixed(1) + " degrees and physics expects " + (c.expected || 0).toFixed(1) + ". This is demo data, connect the backend for real answers.";
+  return "I'm running on demo data. Start the backend and I can answer with real readings.";
+}
+$("askForm").onsubmit = e => { e.preventDefault(); askKelvin($("askInput").value); };
+
+// Hands-free: click the mic once. Kelvin keeps listening and answers anything that starts with "Kelvin".
+// Right after you turn the mic on (or say just "Kelvin"), the next sentence counts as a question too.
+const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+const WAKE = /\b(kelvin|kelvins|calvin|kevin|kelven)\b[\s,.!?:]*/i;
+let rec = null, handsFree = false, armedUntil = 0, quietUntil = 0, restarts = 0;
+if (!Rec) $("micBtn").style.display = "none";
+
+function setMicUI(text) {
+  $("micBtn").classList.toggle("on", handsFree);
+  $("micBtn").title = handsFree ? "Listening. Click to stop." : "Talk to Kelvin hands-free";
+  $("askInput").placeholder = text || (handsFree ? 'Listening… say "Kelvin, …"' : "Ask Kelvin about your experiment…");
+}
+function heard(text) {
+  if (Date.now() < quietUntil) return;                  // ignore Kelvin's own voice
+  text = text.trim(); if (!text) return;
+  const m = text.match(WAKE);
+  if (m) {
+    const q = text.slice(m.index + m[0].length).trim();
+    if (q.split(/\s+/).length >= 2) { armedUntil = 0; askKelvin(q); }
+    else { armedUntil = Date.now() + 7000; setMicUI("Yes? I'm listening…"); }
+  } else if (Date.now() < armedUntil && text.split(/\s+/).length >= 2) {
+    armedUntil = 0; askKelvin(text);
+  }
+  if (!armedUntil) setTimeout(() => setMicUI(), 300);
+}
+function startListening() {
+  rec = new Rec(); rec.lang = "en-US"; rec.continuous = true; rec.interimResults = true;
+  rec.onresult = ev => {
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const r = ev.results[i];
+      if (Date.now() >= quietUntil && (WAKE.test(r[0].transcript) || Date.now() < armedUntil)) $("askInput").value = r[0].transcript;
+      if (r.isFinal) { $("askInput").value = ""; heard(r[0].transcript); }
+    }
+  };
+  rec.onerror = ev => {
+    if (ev.error === "not-allowed" || ev.error === "service-not-allowed") { handsFree = false; setMicUI("Mic blocked. Allow it in the address bar, or type."); }
+  };
+  rec.onend = () => {                                   // the browser stops listening now and then; quietly restart
+    if (!handsFree) return setMicUI();
+    if (++restarts > 200) { handsFree = false; return setMicUI("Mic stopped. Click 🎤 to listen again."); }
+    setTimeout(() => { if (handsFree) try { rec.start(); } catch (e) {} }, 250);
+  };
+  rec.start();
+}
+$("micBtn").onclick = () => {
+  if (!Rec) return;
+  handsFree = !handsFree; restarts = 0;
+  if (handsFree) { try { speechSynthesis.cancel(); } catch (e) {} armedUntil = Date.now() + 8000; setMicUI("Go ahead, I'm listening…"); startListening(); }
+  else { armedUntil = 0; try { rec && rec.stop(); } catch (e) {} setMicUI(); }
+};
+
+// ------------------------------------------------------------ lab report
+$("reportBtn").onclick = () => {
+  if (live && ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "report" })); message[lab] = "Writing your report…"; render(); }
+  else showReport({});
+};
+$("rClose").onclick = () => { $("report").hidden = true; };
+$("rPrint").onclick = () => window.print();
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("report").hidden = true; });
+const pageOpened = Date.now();
+function showReport(r) {
+  const mistakes = r.mistakes !== undefined ? r.mistakes : log.length;
+  const fixed = r.fixed !== undefined ? r.fixed : log.filter(e => e.result === "fixed").length;
+  const mins = r.minutes || Math.max(1, Math.round((Date.now() - pageOpened) / 60000));
+  const st = r.settings || settings;
+  $("rDate").textContent = new Date().toLocaleString([], { dateStyle: "full", timeStyle: "short" }) + " · " + (lab === "motor" ? "Motor control lab" : "Cooling lab");
+  $("rSummary").textContent = r.summary ||
+    ("In " + mins + " minute" + (mins === 1 ? "" : "s") + ", Kelvin caught " + mistakes + " mistake" + (mistakes === 1 ? "" : "s") +
+     " and confirmed " + fixed + " fix" + (fixed === 1 ? "" : "es") + ". The controller is now at kp " + (+st.kp).toFixed(2) + ".");
+  $("rStats").innerHTML =
+    "<div>Time<b>" + mins + " min</b></div><div>Mistakes caught<b>" + mistakes + "</b></div><div>Fixes that worked<b>" + fixed + "</b></div>" +
+    "<div>Settings now<b>kp " + (+st.kp).toFixed(2) + "</b></div>";
+  try { $("rChart").src = $("chart").toDataURL("image/png"); } catch (e) {}
+  const names = { open: "Needs a fix", applied: "Fix applied", fixed: "Fixed", partial: "Helped, not enough", undone: "Undone" };
+  $("rRows").innerHTML = log.length ? log.map(e => "<tr><td>" + e.time + "</td><td>" + (e.lab === "motor" ? "Motor" : "Cooling") + "</td><td>" + e.what +
+    "</td><td>" + e.fix + "</td><td>" + (names[e.result] || e.result) + "</td></tr>").join("") : '<tr><td colspan="5">No mistakes this session.</td></tr>';
+  $("report").hidden = false;
+  if (message[lab] === "Writing your report…") { message[lab] = ""; render(); }
 }
 
 // ------------------------------------------------------------ apply fix
+// Applying goes through the backend when it's running (so voice and the button do the same thing).
+// The backend answers with an "applied" message, and that updates the screen.
+const demoUndo = [];
 $("applyBtn").onclick = () => {
-  const f = fixes[lab]; if (!f) return;
+  const f = fixes.motor; if (!f) return;
   if (live && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "apply_fix", fix: f }));
-  else sim.applyFix(f);
-  settings = Object.assign({}, settings, f);
-  const open = [...log].reverse().find(e => e.lab === lab && e.result === "open");
-  if (open) open.result = "applied";
-  fixes[lab] = null;
-  state[lab] = "fixing";
-  message[lab] = "Fix sent to the robot. Watching the next run to see if it worked.";
-  render();
+  else demoApply(f);
 };
+function demoApply(f) {
+  demoUndo.push(Object.assign({}, settings));
+  sim.applyFix(f);
+  markApplied(f);
+}
+function markApplied(f, before) {
+  const old = before || settings;                    // "kp 6.00 → 2.10" uses the values from before the change
+  const change = Object.keys(f).map(k => k + " " + (+old[k] || 0).toFixed(2) + " → " + (+f[k]).toFixed(2)).join(", ");
+  settings = Object.assign({}, settings, f);
+  const open = [...log].reverse().find(e => e.lab === "motor" && e.result === "open");
+  if (open) { open.result = "applied"; open.fix = change; }
+  else log.push({ lab: "motor", time: clock(), what: "Student changed the settings", fix: change, result: "applied" });
+  fixes.motor = null;
+  state.motor = "fixing";
+  message.motor = "Fix sent to the robot. Watching the next run to see if it worked.";
+  asked.motor = "";
+  render();
+}
+function markUndone() {
+  const e = [...log].reverse().find(e => e.lab === "motor" && (e.result === "applied" || e.result === "fixed"));
+  if (e) e.result = "undone";
+  if (state.motor === "fixing") state.motor = "stable";
+  render();
+}
 
 // ------------------------------------------------------------ websocket
 function connect() {
@@ -380,6 +637,7 @@ function render() {
     "Kelvin's fix worked. Back on track.";
   $("caught").textContent = log.filter(e => e.lab === lab).length;
   $("legend").innerHTML = '<span><i class="key"></i>' + L.legend[0] + '</span><span><i class="key target"></i>' + L.legend[1] + "</span>";
+  $("asked").textContent = asked[lab] || "";
   $("said").textContent = message[lab] || "Watching the experiment. I'll speak up the moment something looks wrong.";
 
   const f = fixes[lab];
@@ -388,21 +646,22 @@ function render() {
       '<div class="change">' + k + ' <span class="old">' + (+settings[k] || 0).toFixed(2) + '</span><span class="arrow">→</span><span class="new">' + (+f[k]).toFixed(2) + "</span></div>").join("");
     $("applyBtn").disabled = false;
   } else {
-    $("rxBody").innerHTML = '<div class="empty">' + (st === "mistake" ? (lab === "cooling" ? "Put the probe back in the water. Kelvin will confirm when the readings match again." : "Check the setup by hand.") : "Nothing to fix right now.") + "</div>";
+    $("rxBody").innerHTML = '<div class="empty">' + (st === "mistake" ? (lab === "cooling" ? "Put the probe back in the water." : "Check the setup by hand.") : "Nothing to fix right now.") + "</div>";
     $("applyBtn").disabled = true;
   }
-  $("settingsLine").textContent = lab === "motor" ? "on the robot now: kp " + (+settings.kp).toFixed(2) + " · ki " + (+settings.ki).toFixed(2) + " · kd " + (+settings.kd).toFixed(2) : "";
+  $("settingsLine").textContent = lab === "motor" ? "now: kp " + (+settings.kp).toFixed(2) + " · ki " + (+settings.ki).toFixed(2) + " · kd " + (+settings.kd).toFixed(2) : "";
 
   const rows = log.filter(e => e.lab === lab).slice().reverse();
-  const label = { open: ["open", "Needs a fix"], applied: ["applied", "Fix applied"], fixed: ["fixed", "Fixed ✓"], partial: ["partial", "Helped, not enough"] };
+  const label = { open: ["open", "Needs a fix"], applied: ["applied", "Fix applied"], fixed: ["fixed", "Fixed ✓"], partial: ["partial", "Helped, not enough"], undone: ["undone", "Undone"] };
   $("logBody").innerHTML = rows.map(e =>
-    '<tr><td class="time">' + e.time + "</td><td>" + e.what + "</td><td>" + e.fix + '</td><td><span class="chip ' + label[e.result][0] + '">' + label[e.result][1] + "</span></td></tr>").join("");
+    '<li><div class="top"><span class="time">' + e.time + '</span><span class="chip ' + label[e.result][0] + '">' + label[e.result][1] + '</span></div>' +
+    '<div class="what">' + e.what + '</div><div class="fx">' + e.fix + '</div></li>').join("");
   $("emptyLog").style.display = rows.length ? "none" : "block";
 
   $("dot").className = "dot" + (live ? " live" : "");
   $("connText").textContent = live ? "live from the lab bench" : "demo data (no backend)";
   $("demoRow").style.display = live ? "none" : "flex";
-  $("demoBtn").textContent = lab === "motor" ? "Load a student's bad controller" : (sim.probeOut ? "Put the probe back" : "Pull the probe out");
+  $("demoBtn").textContent = lab === "motor" ? "Demo: load a bad controller" : (sim.probeOut ? "Demo: put the probe back" : "Demo: pull the probe out");
 }
 
 function readingsHTML() {
@@ -428,10 +687,11 @@ function readingsHTML() {
 }
 
 function draw() {
-  const cv = $("chart"), dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  const cv = $("chart"), dpr = window.devicePixelRatio || 1, w = cv.parentNode.clientWidth, h = cv.parentNode.clientHeight;
+  if (w < 10 || h < 10) return;
   if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
   const x = cv.getContext("2d"); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h);
-  const s = series[lab], L = 48, R = w - 14, T = 34, B = h - 28;
+  const s = series[lab], L = 44, R = w - 12, T = 30, B = h - 24;
   let lo = lab === "motor" ? 0 : 15, hi = lab === "motor" ? 140 : 85;
   for (const p of s) { if (p.a > hi) hi = p.a; if (p.a < lo) lo = p.a; }
   hi = Math.ceil(hi / 10) * 10; lo = Math.floor(lo / 10) * 10;
