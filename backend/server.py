@@ -30,7 +30,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from photon.ta_report import send_ta_report
+from photon.ta_report import photon_ready, poll_ta, send_ta_report, send_ta_text
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -218,10 +218,23 @@ def remember_event(lab: str, text: str):
 ta = {"open_since": None, "open_issue": "", "open_what": "", "stuck_sent": False, "failed_fixes": 0, "approval": None}
 
 
+def ta_enabled():
+    """Can Kelvin text the TA? Yes if the Photon keys are in .env (or an outside service is set as NOTIFY_URL)."""
+    return photon_ready() or bool(NOTIFY_URL)
+
+
 def notify(event: str, text: str, **extra):
-    """Send one event to the Photon service, which texts it to the TA. Never blocks, never crashes."""
+    """Text one event to the TA through Photon. Runs in the background, never blocks, never crashes."""
     body = {"event": event, "station": STATION, "text": text, **extra}
     print(f"[to TA] {event}: {text}")
+    if photon_ready():
+        def photon_send():
+            try:
+                print("[Photon]", send_ta_text(text))
+            except Exception as e:
+                print(f"[Photon] text to TA failed ({type(e).__name__}: {str(e)[:120]})")
+        threading.Thread(target=photon_send, daemon=True).start()
+        return
     if not NOTIFY_URL:
         return
 
@@ -334,7 +347,7 @@ def do_action(a: dict, lab: str, source: str = "student") -> str:
         vals, problem = clean_fix(a, HARD if source == "ta" else SAFE)
         if problem:
             wide, _ = clean_fix(a, HARD)
-            if wide and source == "student" and NOTIFY_URL:
+            if wide and source == "student" and ta_enabled():
                 return ask_ta_approval(wide)
             return problem
         if a.get("apply"):
@@ -399,7 +412,7 @@ def do_action(a: dict, lab: str, source: str = "student") -> str:
         if source == "ta":
             return "Writing the report now. It'll be my next text."
         if to_ta:
-            return ("Here's your lab report. I'm texting a copy to your TA too." if NOTIFY_URL
+            return ("Here's your lab report. I'm texting a copy to your TA too." if ta_enabled()
                     else "Here's your lab report. TA texting isn't set up, so save it as a PDF and send it yourself.")
         return "Here's your lab report. You can save it as a PDF."
     return "I'm not able to do that one yet."
@@ -951,7 +964,7 @@ async def ws_endpoint(ws: WebSocket):
                     send({"type": "answer", "question": "Apply fix", "text": problem})
             elif msg.get("type") == "report_to_ta":    # the student said "send this to the TA" with the report open
                 summary = str(msg.get("summary") or "").strip()[:2000]
-                if not NOTIFY_URL:
+                if not ta_enabled():
                     text, ok = "TA texting isn't set up yet, so I couldn't send it. You can save it as a PDF instead.", "off"
                 elif not summary:
                     text, ok = "The report is still being written. Try again in a second.", "empty"
@@ -1104,7 +1117,10 @@ def main():
     print("\n  Dashboard: open http://localhost:8000 in Edge")
     print(f"  AI: {ai} key found" if ai else "  AI: NO KEY SET. Kelvin will use plain templates and can't answer questions well.")
     print(f"  Other laptops reach this one at: http://{lan_ip()}:8000   (for relay.py and the Photon service)")
-    print(f"  TA texts: {'on, sending to ' + NOTIFY_URL if NOTIFY_URL else 'off (no NOTIFY_URL set)'}   Station: {STATION}")
+    ta_how = "on, through Photon iMessage" if photon_ready() else ("on, sending to " + NOTIFY_URL) if NOTIFY_URL else "off (add the PHOTON_ keys to backend/.env)"
+    print(f"  TA texts: {ta_how}   Station: {STATION}")
+    if photon_ready():                 # the TA can text Kelvin back: questions, "OK" for approvals, "send me the report"
+        threading.Thread(target=poll_ta, args=(lambda q: handle_voice(q, "", "ta"),), daemon=True).start()
     print()
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
 
