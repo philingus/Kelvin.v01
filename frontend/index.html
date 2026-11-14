@@ -371,7 +371,8 @@ function speak(text) {
       if (voicePick) utter.voice = voicePick;
       utter.rate = 1.0; utter.pitch = 0.95; utter.volume = 0.9;
       quietUntil = Date.now() + 1500 + spoken.split(/\s+/).length * 450;   // rough speaking time, in case onend never fires
-      utter.onend = utter.onerror = () => { quietUntil = Date.now() + 700; };
+      if (handsFree) openFollowUp(quietUntil);
+      utter.onend = utter.onerror = () => { quietUntil = Date.now() + 700; if (handsFree) openFollowUp(quietUntil); };
       speechSynthesis.speak(utter);
     }, 120);
   } catch (e) {}
@@ -381,12 +382,14 @@ function speak(text) {
 // ------------------------------------------------------------ ask Kelvin
 const asked = { motor: "", cooling: "" };
 function onAnswer(a) {
+  if (a.report_sent) $("rTa").textContent = a.report_sent === "ok" ? "Sent to TA ✓" : "Not sent";
   asked[lab] = a.from === "ta" ? (a.question ? "Your TA texted: " + a.question : "Message from your TA") : "You asked: " + a.question;
   message[lab] = a.text;
   render(); speak(a.text);
 }
 function askKelvin(q) {
   q = (q || "").trim(); if (!q) return;
+  if (!$("report").hidden && reportCommand(q)) { $("askInput").value = ""; return; }
   $("askInput").value = "";
   asked[lab] = "You asked: " + q; message[lab] = "Thinking…"; render();
   if (live && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "ask", question: q, lab }));
@@ -443,7 +446,14 @@ $("askForm").onsubmit = e => { e.preventDefault(); askKelvin($("askInput").value
 // Right after you turn the mic on (or say just "Kelvin"), the next sentence counts as a question too.
 const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
 const WAKE = /\b(kelvin|kelvins|calvin|kevin|kelven)\b[\s,.!?:]*/i;
-let rec = null, handsFree = false, armedUntil = 0, quietUntil = 0, restarts = 0;
+let rec = null, handsFree = false, armedUntil = 0, quietUntil = 0, restarts = 0, lastHeard = 0;
+const FOLLOW_UP_MS = 8000;   // after Kelvin talks, you can answer without saying "Kelvin" first
+function openFollowUp(from) {
+  armedUntil = from + FOLLOW_UP_MS;
+  setMicUI("Go ahead, or say \"Kelvin, ...\" later");
+  clearTimeout(openFollowUp.t);
+  openFollowUp.t = setTimeout(() => { if (Date.now() >= armedUntil) setMicUI(); }, armedUntil - Date.now() + 100);
+}
 if (!Rec) $("micBtn").style.display = "none";
 
 function setMicUI(text) {
@@ -466,7 +476,10 @@ function heard(text) {
 }
 function startListening() {
   rec = new Rec(); rec.lang = "en-US"; rec.continuous = true; rec.interimResults = true;
+  lastHeard = Date.now();
+  rec.onstart = rec.onaudiostart = rec.onsoundstart = () => { lastHeard = Date.now(); };
   rec.onresult = ev => {
+    lastHeard = Date.now(); restarts = 0;
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
       const r = ev.results[i];
       if (Date.now() >= quietUntil && (WAKE.test(r[0].transcript) || Date.now() < armedUntil)) $("askInput").value = r[0].transcript;
@@ -483,6 +496,10 @@ function startListening() {
   };
   rec.start();
 }
+// Edge sometimes stops hearing you but never says it stopped. If it has gone quiet for 12 seconds, restart it.
+setInterval(() => {
+  if (handsFree && rec && Date.now() - lastHeard > 12000) { lastHeard = Date.now(); try { rec.abort(); } catch (e) {} }
+}, 3000);
 $("micBtn").onclick = () => {
   if (!Rec) return;
   handsFree = !handsFree; restarts = 0;
@@ -496,12 +513,27 @@ $("reportBtn").onclick = () => {
   else showReport({});
 };
 $("rClose").onclick = () => { $("report").hidden = true; };
-$("rPrint").onclick = () => window.print();
-$("rTa").onclick = () => {
-  if (live && ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "report", to_ta: true })); $("rTa").textContent = "Sent to TA ✓"; }
-  else $("rTa").textContent = "Needs the backend";
+// While the report is open: "send this to the TA", "print it" / "save it as a PDF", "close it"
+let shownReport = {};
+function reportCommand(q) {
+  const s = q.toLowerCase();
+  if (/\b(send|text|email|share|forward)\b/.test(s) && /\b(t\.?\s?a\.?|tas|teacher|professor|instructor|it|this|that)\b/.test(s)) { sendReportToTa(); return true; }
+  if (/\b(print|pdf|save)\b/.test(s)) { speak("Opening the print window. Pick Save as PDF."); setTimeout(() => window.print(), 600); return true; }
+  if (/\b(close|exit|hide|dismiss|done|go back)\b/.test(s)) { $("report").hidden = true; speak("Closed the report."); return true; }
+  return false;
+}
+function sendReportToTa() {
+  if (live && ws && ws.readyState === 1) {
+    ws.send(JSON.stringify(Object.assign({ type: "report_to_ta", summary: $("rSummary").textContent, lab }, shownReport)));
+    $("rTa").textContent = "Sending…";
+  } else {
+    onAnswer({ question: "Send this to the TA", text: "I'm on demo data right now. Start the backend and I can text your TA." });
+    $("rTa").textContent = "Needs the backend";
+  }
   setTimeout(() => { $("rTa").textContent = "Text to TA"; }, 4000);
-};
+}
+$("rPrint").onclick = () => window.print();
+$("rTa").onclick = sendReportToTa;
 document.addEventListener("keydown", e => { if (e.key === "Escape") $("report").hidden = true; });
 const pageOpened = Date.now();
 function showReport(r) {
@@ -509,6 +541,7 @@ function showReport(r) {
   const fixed = r.fixed !== undefined ? r.fixed : log.filter(e => e.result === "fixed").length;
   const mins = r.minutes || Math.max(1, Math.round((Date.now() - pageOpened) / 60000));
   const st = r.settings || settings;
+  shownReport = { minutes: mins, mistakes, fixed };
   $("rDate").textContent = new Date().toLocaleString([], { dateStyle: "full", timeStyle: "short" }) + " · " + (lab === "motor" ? "Motor control lab" : "Cooling lab");
   $("rSummary").textContent = r.summary ||
     ("In " + mins + " minute" + (mins === 1 ? "" : "s") + ", Kelvin caught " + mistakes + " mistake" + (mistakes === 1 ? "" : "s") +

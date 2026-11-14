@@ -420,6 +420,8 @@ def quick_intent(q: str, lab: str = "", source: str = "student"):
     report_words = r"\b(show|give|make|create|generate|send|open|write|get|pull up|need|want|see|text|email|share|forward)\b.*\b(report|summary|recap)\b|\bsummari[sz]e\b"
     if re.search(report_words, s):
         return {"type": "report", "to_ta": bool(re.search(TA_WORDS, s))}
+    if re.search(r"\b(send|text|email|forward|share)\b.*\b(it|this|that|results?)\b", s) and re.search(TA_WORDS, s):
+        return {"type": "report", "to_ta": True}     # "send this to the TA" with no report open yet
     hold = re.search(r"\b(hold|keep|lock)\b.*?\b(\d+(\.\d+)?)\b", s)
     if hold and not re.search(r"\bk ?[pid]\b", s):
         return {"type": "hold", "value": float(hold.group(2))}
@@ -923,6 +925,18 @@ async def ws_endpoint(ws: WebSocket):
                     apply_settings(vals)
                 else:
                     send({"type": "answer", "question": "Apply fix", "text": problem})
+            elif msg.get("type") == "report_to_ta":    # the student said "send this to the TA" with the report open
+                summary = str(msg.get("summary") or "").strip()[:2000]
+                if not NOTIFY_URL:
+                    text, ok = "TA texting isn't set up yet, so I couldn't send it. You can save it as a PDF instead.", "off"
+                elif not summary:
+                    text, ok = "The report is still being written. Try again in a second.", "empty"
+                else:
+                    notify("report", f"Lab report from {STATION}: {summary}", minutes=msg.get("minutes"),
+                           mistakes=msg.get("mistakes"), fixed=msg.get("fixed"), settings=settings)
+                    remember_event("chat", "the student texted their lab report to the TA")
+                    text, ok = "Sent. Your TA has the report.", "ok"
+                send({"type": "answer", "question": "Send this to the TA", "text": text, "report_sent": ok})
             elif msg.get("type") == "report":
                 threading.Thread(target=send_report, args=(bool(msg.get("to_ta")),), daemon=True).start()
             elif msg.get("type") == "ask":            # {"type":"ask","question":"...","lab":"motor"}
