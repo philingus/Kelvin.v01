@@ -1,5 +1,3 @@
-# Kelvin.v01
-
 # Kelvin
 
 An AI lab partner that catches mistakes while an experiment is running.

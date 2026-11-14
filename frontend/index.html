@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kelvin</title>
+<style>
+  :root { --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --ink:#f2f4f8; --muted:#9aa3b2;
+          --blue:#4c9aff; --gray:#8b93a1; --red:#ff5c5c; --green:#3ddc97; --amber:#ffb84d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; padding:20px; }
+  header { display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:16px; }
+  h1 { font-size:30px; margin:0; letter-spacing:.5px; }
+  .tag { color:var(--muted); font-size:15px; flex:1; min-width:200px; }
+  select, button { font:inherit; font-size:16px; color:var(--ink); background:var(--panel); border:1px solid var(--line);
+                   border-radius:10px; padding:10px 14px; cursor:pointer; }
+  button:hover, select:hover { border-color:var(--muted); }
+  button.primary { background:var(--blue); border-color:var(--blue); color:#06121f; font-weight:600; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .pill { font-size:14px; padding:6px 12px; border-radius:999px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  .pill.ok { color:var(--green); border-color:var(--green); }
+  .pill.bad { color:var(--red); border-color:var(--red); }
+  .pill.demo { color:var(--amber); border-color:var(--amber); }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
+  .card .k { color:var(--muted); font-size:14px; }
+  .card .v { font-size:30px; font-weight:600; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .chartbox { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:12px; }
+  .legend { display:flex; gap:18px; font-size:14px; color:var(--muted); padding:2px 6px 8px; }
+  .sw { display:inline-block; width:18px; height:3px; vertical-align:middle; margin-right:6px; border-radius:2px; }
+  canvas { width:100%; height:320px; display:block; }
+  .diag { margin-top:12px; background:var(--panel); border:2px solid var(--line); border-radius:14px; padding:18px 20px; }
+  .diag.bad { border-color:var(--red); }
+  .diag.ok { border-color:var(--green); }
+  .diag .title { font-size:14px; color:var(--muted); text-transform:none; margin-bottom:6px; }
+  .diag .text { font-size:24px; line-height:1.35; }
+  .fix { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-top:14px; }
+  .fix .vals { font-size:17px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .fix .vals b { color:var(--ink); }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px; }
+  .hint { color:var(--muted); font-size:14px; }
+  label.chk { color:var(--muted); font-size:15px; display:flex; gap:6px; align-items:center; cursor:pointer; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Kelvin</h1>
+    <div class="tag">Catches lab mistakes while the experiment is still running</div>
+    <select id="lab" aria-label="Lab">
+      <option value="motor">Motor control</option>
+      <option value="cooling">Cooling experiment</option>
+    </select>
+    <span id="conn" class="pill demo">Demo data</span>
+    <span id="status" class="pill ok">Monitoring</span>
+  </header>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="chartbox">
+    <div class="legend" id="legend"></div>
+    <canvas id="chart"></canvas>
+  </div>
+
+  <div class="diag" id="diag">
+    <div class="title">Kelvin says</div>
+    <div class="text" id="diagText">Everything matches so far.</div>
+    <div class="fix" id="fixRow" style="display:none">
+      <div class="vals" id="fixVals"></div>
+      <button class="primary" id="applyBtn">Apply fix</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <label class="chk"><input type="checkbox" id="voice" checked> Speak out loud</label>
+    <span class="hint" id="settingsLine"></span>
+  </div>
+  <div class="row" id="demoRow">
+    <span class="hint">Demo controls (only shown when no backend is connected):</span>
+    <button id="demoBtn"></button>
+  </div>
+</div>
+
+<script>
+// ---------- config ----------
+const WS_URL = "ws://localhost:8000/ws";
+const WINDOW_S = { motor: 10, cooling: 120 };
+
+// ---------- state ----------
+const $ = id => document.getElementById(id);
+let lab = "motor";
+let live = false, ws = null;
+let mistakes = { motor: 0, cooling: 0 };
+let pendingFix = null;
+let settings = { kp: 1.2, ki: 0.4, kd: 0.05 };
+const series = { motor: [], cooling: [] };   // points: {t (seconds), a (measured), b (target/expected)}
+let latest = { motor: {}, cooling: {} };
+
+// ---------- incoming messages (same shapes as the README) ----------
+function handle(msg) {
+  if (msg.type === "diagnosis") return showDiagnosis(msg);
+  if (msg.type === "settings") { settings = { kp: msg.kp, ki: msg.ki, kd: msg.kd }; return renderSettings(); }
+  if (msg.lab === "motor") {
+    latest.motor = msg;
+    push("motor", { t: msg.t / 1000, a: msg.speed, b: msg.target });
+  } else if (msg.lab === "cooling") {
+    latest.cooling = msg;
+    push("cooling", { t: msg.t / 1000, a: msg.temp, b: msg.expected });
+  }
+}
+function push(which, p) {
+  const s = series[which]; s.push(p);
+  const cutoff = p.t - WINDOW_S[which];
+  while (s.length && s[0].t < cutoff) s.shift();
+}
+
+function showDiagnosis(d) {
+  if (d.lab && d.lab !== lab) { $("lab").value = d.lab; setLab(d.lab); }
+  const good = d.issue === "ok";
+  $("diag").className = "diag " + (good ? "ok" : "bad");
+  $("diagText").textContent = d.text || "";
+  $("status").className = "pill " + (good ? "ok" : "bad");
+  $("status").textContent = good ? "Monitoring" : "Mistake caught";
+  if (!good) mistakes[d.lab || lab]++;
+  pendingFix = d.fix || null;
+  if (pendingFix) {
+    $("fixRow").style.display = "flex";
+    $("fixVals").innerHTML = "Proposed settings: " + fmtFix(pendingFix);
+    $("applyBtn").disabled = false;
+  } else {
+    $("fixRow").style.display = "none";
+  }
+  speak(d.text);
+}
+const fmtFix = f => ["kp", "ki", "kd"].filter(k => f[k] !== undefined).map(k => k + " <b>" + Number(f[k]).toFixed(2) + "</b>").join(" &nbsp; ");
+
+function speak(text) {
+  if (!text || !$("voice").checked || !window.speechSynthesis) return;
+  try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {}
+}
+
+// ---------- outgoing ----------
+$("applyBtn").onclick = () => {
+  if (!pendingFix) return;
+  const msg = { type: "apply_fix", fix: pendingFix };
+  if (live && ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); else sim.applyFix(pendingFix);
+  settings = Object.assign({}, settings, pendingFix); renderSettings();
+  $("applyBtn").disabled = true;
+  $("diagText").textContent = "Fix sent to the robot. Watching the next run.";
+  $("diag").className = "diag"; $("status").className = "pill ok"; $("status").textContent = "Monitoring";
+};
+
+// ---------- websocket with auto-reconnect ----------
+function connect() {
+  try { ws = new WebSocket(WS_URL); } catch (e) { return setTimeout(connect, 2000); }
+  ws.onopen = () => { live = true; series.motor.length = 0; series.cooling.length = 0; renderConn(); };
+  ws.onmessage = ev => { try { handle(JSON.parse(ev.data)); } catch (e) {} };
+  ws.onclose = () => { live = false; renderConn(); setTimeout(connect, 2000); };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
+}
+function renderConn() {
+  $("conn").className = "pill " + (live ? "ok" : "demo");
+  $("conn").textContent = live ? "Live" : "Demo data";
+  $("demoRow").style.display = live ? "none" : "flex";
+}
+
+// ---------- built-in fake data (runs only when no backend is connected) ----------
+const sim = {
+  t: 0, speed: 0, vel: 0, target: 40, stepAt: 0, peak: 0, lastOver: null, flagged: false, verifyNext: false,
+  kp: 1.2, cool: 80, coolT: 0, probeOut: false, coolFlag: false,
+  applyFix(f) { if (f.kp !== undefined) this.kp = f.kp; this.flagged = false; this.verifyNext = true; },
+  loadBad() { this.kp = 6; this.flagged = false; this.verifyNext = false; settings = { kp: 6, ki: 0.4, kd: 0.05 }; renderSettings(); },
+  tick(dt) {
+    this.t += dt;
+    // motor: target flips every 4 s; damping drops as kp rises, so a high kp overshoots and rings
+    if (this.t - this.stepAt >= 4) { this.endStep(); this.stepAt = this.t; this.target = this.target === 40 ? 100 : 40; this.peak = this.speed; }
+    const wn = 7, zeta = Math.max(0.08, Math.min(1, 1.08 / this.kp));
+    this.vel += (wn * wn * (this.target - this.speed) - 2 * zeta * wn * this.vel) * dt;
+    this.speed += this.vel * dt;
+    if (this.target === 100) this.peak = Math.max(this.peak, this.speed);
+    const sp = this.speed + (Math.random() - 0.5) * 0.8;
+    handle({ lab: "motor", t: this.t * 1000, target: this.target, speed: sp, motor: Math.max(-255, Math.min(255, sp * 2 + this.vel * 0.4)), tilt: 0 });
+    // cooling: one reading a second
+    this.coolT += dt;
+    if (this.coolT >= 1) {
+      this.coolT = 0;
+      const expected = 22 + 58 * Math.exp(-0.012 * (this.t % 150));
+      this.cool += this.probeOut ? (22 - this.cool) * 0.35 : (expected - this.cool) * 0.6;
+      const temp = this.cool + (Math.random() - 0.5) * 0.3;
+      handle({ lab: "cooling", t: this.t * 1000, temp, expected });
+      if (!this.coolFlag && expected - temp > 6) {
+        this.coolFlag = true;
+        handle({ type: "diagnosis", lab: "cooling", issue: "probe_out", text: "Your reading dropped " + Math.round(expected - temp) + " degrees below where it should be. The probe looks like it is out of the water." });
+      } else if (this.coolFlag && !this.probeOut && Math.abs(expected - temp) < 1.5) {
+        this.coolFlag = false;
+        handle({ type: "diagnosis", lab: "cooling", issue: "ok", text: "The probe is back and the readings match again. I logged the mistake for the report." });
+      }
+    }
+  },
+  endStep() {
+    if (this.target !== 100) return;
+    const over = Math.round(Math.max(0, this.peak - 100));
+    if (this.verifyNext) {
+      this.verifyNext = false;
+      const before = this.lastOver;
+      handle({ type: "diagnosis", lab: "motor", issue: over > 20 ? "overshoot" : "ok",
+        text: over > 20 ? "Still overshooting by " + over + " percent. Lower the first setting again."
+                        : "That worked. Overshoot went from " + before + " percent down to " + over + " percent.",
+        fix: over > 20 ? { kp: +(this.kp / 2).toFixed(2) } : undefined });
+    } else if (over > 20 && !this.flagged) {
+      this.flagged = true;
+      handle({ type: "diagnosis", lab: "motor", issue: "overshoot",
+        text: "The wheel overshot its target by " + over + " percent and kept ringing. The first setting is too high for this motor. Lower it to about a third.",
+        fix: { kp: +(this.kp / 3).toFixed(2) } });
+    }
+    this.lastOver = over;
+  }
+};
+setInterval(() => { if (!live) sim.tick(0.02); }, 20);
+
+$("demoBtn").onclick = () => {
+  if (lab === "motor") sim.loadBad();
+  else { sim.probeOut = !sim.probeOut; renderDemoBtn(); }
+};
+function renderDemoBtn() {
+  $("demoBtn").textContent = lab === "motor" ? "Load a bad controller" : (sim.probeOut ? "Put the probe back" : "Pull the probe out");
+}
+
+// ---------- rendering ----------
+function setLab(v) {
+  lab = v;
+  $("legend").innerHTML = lab === "motor"
+    ? '<span><i class="sw" style="background:var(--blue)"></i>Wheel speed</span><span><i class="sw" style="background:var(--gray)"></i>Target</span>'
+    : '<span><i class="sw" style="background:var(--blue)"></i>Temperature</span><span><i class="sw" style="background:var(--gray)"></i>Expected</span>';
+  renderDemoBtn(); renderSettings();
+}
+$("lab").onchange = e => setLab(e.target.value);
+
+function renderSettings() {
+  $("settingsLine").innerHTML = lab === "motor"
+    ? "Current settings: kp " + Number(settings.kp).toFixed(2) + ", ki " + Number(settings.ki).toFixed(2) + ", kd " + Number(settings.kd).toFixed(2)
+    : "";
+}
+const n = (v, d) => (v === undefined || v === null || isNaN(v)) ? "--" : Number(v).toFixed(d);
+function renderCards() {
+  const m = latest.motor, c = latest.cooling;
+  const items = lab === "motor"
+    ? [["Wheel speed", n(m.speed, 1)], ["Target", n(m.target, 0)], ["Motor power", n(m.motor, 0)], ["Mistakes caught", mistakes.motor]]
+    : [["Temperature", n(c.temp, 1) + " °C"], ["Expected", c.expected === undefined ? "--" : n(c.expected, 1) + " °C"], ["Mistakes caught", mistakes.cooling]];
+  $("cards").innerHTML = items.map(i => '<div class="card"><div class="k">' + i[0] + '</div><div class="v">' + i[1] + "</div></div>").join("");
+}
+
+function draw() {
+  const cv = $("chart"), dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  const x = cv.getContext("2d"); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h);
+  const s = series[lab], L = 46, R = w - 10, T = 10, B = h - 26;
+  let lo = lab === "motor" ? 0 : 15, hi = lab === "motor" ? 140 : 85;
+  for (const p of s) { if (p.a > hi) hi = p.a; if (p.a < lo) lo = p.a; }
+  hi = Math.ceil(hi / 10) * 10; lo = Math.floor(lo / 10) * 10;
+  const tEnd = s.length ? s[s.length - 1].t : 0, tStart = tEnd - WINDOW_S[lab];
+  const X = t => L + (t - tStart) / (tEnd - tStart || 1) * (R - L), Y = v => B - (v - lo) / (hi - lo || 1) * (B - T);
+  x.font = "13px system-ui"; x.fillStyle = "#9aa3b2"; x.strokeStyle = "#2a2f3a"; x.lineWidth = 1;
+  for (let k = 0; k <= 4; k++) {
+    const v = lo + (hi - lo) * k / 4, y = Y(v);
+    x.beginPath(); x.moveTo(L, y); x.lineTo(R, y); x.stroke();
+    x.textAlign = "right"; x.fillText(Math.round(v), L - 8, y + 4);
+  }
+  x.textAlign = "center"; x.fillText("last " + WINDOW_S[lab] + " seconds", (L + R) / 2, h - 6);
+  const line = (key, color, width, dash) => {
+    x.beginPath(); x.setLineDash(dash || []); x.strokeStyle = color; x.lineWidth = width; x.lineJoin = "round";
+    let started = false;
+    for (const p of s) { if (p[key] === undefined || p[key] === null) continue; const px = X(p.t), py = Y(p[key]); started ? x.lineTo(px, py) : x.moveTo(px, py); started = true; }
+    x.stroke(); x.setLineDash([]);
+  };
+  line("b", "#8b93a1", 2, [6, 5]);
+  line("a", $("status").classList.contains("bad") ? "#ff5c5c" : "#4c9aff", 3);
+}
+
+function frame() { renderCards(); draw(); requestAnimationFrame(frame); }
+setLab("motor"); renderConn(); connect(); frame();
+</script>
+</body>
+</html>
