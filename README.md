@@ -14,9 +14,15 @@ Backend -> dashboard over WebSocket ws://localhost:8000/ws, one JSON per message
 
 ```
 {"lab":"motor","t":1234,"target":100,"speed":96.2,"motor":140,"tilt":0.4}
-{"lab":"cooling","t":1234,"temp":71.3}
+{"lab":"cooling","t":1234,"temp":71.3,"expected":72.0}
 {"type":"diagnosis","lab":"motor","issue":"overshoot","text":"...","fix":{"kp":1.2,"ki":0.1,"kd":0}}
+{"type":"settings","kp":1.2,"ki":0.4,"kd":0.05}
 ```
+
+- `expected` is the value the physics curve predicts right now. The dashboard draws it as the dashed line.
+- `issue` is `"ok"` when things are back to normal. That turns the dashboard green.
+- `fix` is optional. Leave it out when there's nothing to apply.
+- `settings` reports the robot's current settings. Send it on startup and after every change.
 
 Dashboard -> backend:
 
@@ -29,4 +35,4 @@ Dashboard -> backend:
 - firmware/minseg: MinSeg robot code (Monika)
 - firmware/cooling: cooling cup code (Nirmit)
 - backend: Python server (Gissell)
-- frontend: dashboard (Phil)
+- frontend: dashboard (Phil). Open frontend/index.html in Chrome. It runs on demo data until the backend is up at ws://localhost:8000/ws.
