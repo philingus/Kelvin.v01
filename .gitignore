@@ -1,1 +1,17 @@
+# secrets: never push these
 .env
+*.env
+backend/.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# node (Photon service)
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db

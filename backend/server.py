@@ -43,9 +43,15 @@ if os.path.exists(_env):
             _k, _v = _line.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
-ROOM_TEMP = 22.0           # degrees C, change to the room's temperature
+ROOM_TEMP = 22.0           # degrees C, set with --room-temp to the room's real temperature
 COOL_DROP_ALERT = 6.0      # degrees below expected that counts as a mistake
 OVERSHOOT_ALERT = 25.0     # percent overshoot that counts as a mistake
+STUCK_SECONDS = 120        # tell the TA when a mistake stays unfixed this long
+
+# Photon (TA texting). Gissell's service listens here for events from Kelvin.
+# Set NOTIFY_URL in backend/.env or with --notify-url. Leave it empty to turn TA texts off.
+STATION = os.environ.get("STATION", "Station 1")
+NOTIFY_URL = os.environ.get("NOTIFY_URL", "")
 
 from contextlib import asynccontextmanager
 
@@ -97,7 +103,12 @@ TEMPLATES = {
     "probe_out": "Your reading dropped {drop} degrees below where it should be. "
                  "The probe looks like it is out of the water.",
     "probe_back": "The probe is back and the readings match again. I logged the mistake for the report.",
+    "drag": "Something is dragging on the wheel. Speed fell {drop} percent below target while motor power went up "
+            "{power} percent to fight it. That's a physical problem, not your settings, so don't change the gains. "
+            "Check for anything touching the wheel.",
+    "drag_gone": "The drag is gone and the wheel is back on target. Your settings were fine the whole time.",
 }
+OK_ISSUES = ("fixed", "probe_back", "drag_gone")      # these turn the dashboard green
 
 
 # Gemini models to try, newest first. gemini-2.5-flash was shut down Oct 16, 2026.
@@ -193,17 +204,53 @@ session = {"started": time.time(), "events": [], "mistakes": 0, "fixed": 0, "app
 
 def remember_event(lab: str, text: str):
     line = f"{time.strftime('%H:%M:%S')} [{lab}] {text}"
-    recent["events"].append(line)
-    del recent["events"][:-8]
+    if lab != "chat":                  # conversation goes in the session log only, so it can't push out readings
+        recent["events"].append(line)
+        del recent["events"][:-8]
     session["events"].append(line)
     del session["events"][:-200]
+
+
+# ---------------------------------------------------------------- TA texting (Photon)
+# Kelvin only texts the TA when it matters: a student is stuck, a change needs approval,
+# a report was sent, or a problem the TA heard about got fixed. Not every diagnosis.
+
+ta = {"open_since": None, "open_issue": "", "open_what": "", "stuck_sent": False, "failed_fixes": 0, "approval": None}
+
+
+def notify(event: str, text: str, **extra):
+    """Send one event to the Photon service, which texts it to the TA. Never blocks, never crashes."""
+    body = {"event": event, "station": STATION, "text": text, **extra}
+    print(f"[to TA] {event}: {text}")
+    if not NOTIFY_URL:
+        return
+
+    def post():
+        try:
+            req = urllib.request.Request(NOTIFY_URL, json.dumps(body).encode(), {"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=5).close()
+        except Exception as e:
+            print("Could not reach the Photon service:", e)
+    threading.Thread(target=post, daemon=True).start()
+
+
+def stuck_watchdog():
+    """Text the TA once if a mistake has been open longer than STUCK_SECONDS."""
+    while True:
+        time.sleep(5)
+        t0 = ta["open_since"]
+        if t0 and not ta["stuck_sent"] and time.time() - t0 > STUCK_SECONDS:
+            ta["stuck_sent"] = True
+            mins = round((time.time() - t0) / 60, 1)
+            notify("stuck", f"{STATION} has been stuck for {mins:g} minutes: {ta['open_what']}")
 
 
 # ---------------------------------------------------------------- voice commands
 # Kelvin can act, not just talk. Every action goes through do_action(), which checks the numbers
 # before touching the robot, and Kelvin's spoken reply is written from what actually happened.
 
-SAFE = {"kp": (0.01, 20.0), "ki": (0.0, 20.0), "kd": (0.0, 5.0)}
+SAFE = {"kp": (0.01, 20.0), "ki": (0.0, 20.0), "kd": (0.0, 5.0)}      # Kelvin applies these on its own
+HARD = {"kp": (0.001, 60.0), "ki": (0.0, 60.0), "kd": (0.0, 15.0)}    # past SAFE but inside HARD needs the TA's OK
 pending_fix = {"motor": None, "cooling": None}   # the suggested fix waiting for "apply"
 undo_stack = []                                  # earlier settings, newest last
 stepper = {"low": 40.0, "high": 100.0, "on": True, "seconds": 4.0}
@@ -231,7 +278,7 @@ def apply_settings(new: dict, why: str = "applied"):
     send({"type": "applied", "lab": "motor", "fix": new, "before": before})
 
 
-def clean_fix(a: dict):
+def clean_fix(a: dict, limits: dict = SAFE):
     """Pull kp/ki/kd numbers out of an action. Returns (values, problem)."""
     vals = {}
     for k in ("kp", "ki", "kd"):
@@ -241,7 +288,7 @@ def clean_fix(a: dict):
             v = round(float(a[k]), 3)
         except (TypeError, ValueError):
             return None, f"I couldn't understand the number for {k}."
-        lo, hi = SAFE[k]
+        lo, hi = limits[k]
         if not lo <= v <= hi:
             return None, f"{k} {v:g} is outside the safe range of {lo:g} to {hi:g}, so I left it alone."
         vals[k] = v
@@ -250,9 +297,31 @@ def clean_fix(a: dict):
     return vals, None
 
 
-def do_action(a: dict, lab: str) -> str:
-    """Carry out one action and return what Kelvin should say about it."""
+def ask_ta_approval(vals: dict) -> str:
+    """A student asked for settings past the safe range. Hold them and text the TA."""
+    ta["approval"] = vals
+    remember_event("motor", f"student asked for {fmt_fix(vals)}, outside the safe range; Kelvin asked the TA")
+    notify("approval", f"{STATION} wants to set {fmt_fix(vals)}, which is outside the safe range. "
+                       "Reply OK to allow it or NO to block it.", fix=vals)
+    return f"{fmt_fix(vals)} is outside the safe range, so I asked your TA. I'll apply it if they say okay."
+
+
+def do_action(a: dict, lab: str, source: str = "student") -> str:
+    """Carry out one action and return what Kelvin should say about it.
+    source is "student" (voice or typing at the bench) or "ta" (texting through Photon)."""
     t = a.get("type")
+    if t in ("approve", "deny"):
+        vals = ta["approval"]
+        if not vals:
+            return "There's nothing waiting for your approval right now."
+        ta["approval"] = None
+        if t == "deny":
+            remember_event("motor", f"TA blocked {fmt_fix(vals)}")
+            send({"type": "answer", "question": "", "from": "ta", "text": f"Your TA said no to {fmt_fix(vals)}. Let's try something closer to the suggested fix."})
+            return f"Blocked. {STATION} keeps its current settings."
+        apply_settings(vals, "applied with TA approval")
+        send({"type": "answer", "question": "", "from": "ta", "text": f"Your TA approved it. {fmt_fix(vals)} is on the robot now."})
+        return f"Approved. {fmt_fix(vals)} is on the robot at {STATION}. I'll tell you if it causes trouble."
     if t == "apply_fix":
         f = pending_fix["motor"]
         if not f:
@@ -260,8 +329,11 @@ def do_action(a: dict, lab: str) -> str:
         apply_settings(f)
         return f"Done. {fmt_fix(f)} is on the robot. I'll watch the next run and tell you if it worked."
     if t == "set_fix":
-        vals, problem = clean_fix(a)
+        vals, problem = clean_fix(a, HARD if source == "ta" else SAFE)
         if problem:
+            wide, _ = clean_fix(a, HARD)
+            if wide and source == "student" and NOTIFY_URL:
+                return ask_ta_approval(wide)
             return problem
         if a.get("apply"):
             apply_settings(vals, "set")
@@ -296,6 +368,19 @@ def do_action(a: dict, lab: str) -> str:
         stepper["high"], stepper["low"], stepper["on"] = v, round(v * 0.4, 1), True
         remember_event("motor", f"student set the target speed to step between {stepper['low']:g} and {v:g}")
         return f"Done. The wheel will now step between {stepper['low']:g} and {v:g}."
+    if t == "hold":
+        try:
+            v = float(a.get("value"))
+        except (TypeError, ValueError):
+            return "I didn't catch the speed you want."
+        if not 5 <= v <= 200:
+            return f"{v:g} is outside the safe range of 5 to 200, so I left the speed alone."
+        stepper["high"] = stepper["low"] = v
+        stepper["on"] = True
+        if motor_link:
+            motor_link.write(f"S,{v:g}")
+        remember_event("motor", f"wheel set to hold a steady {v:g}")
+        return f"Holding the wheel at a steady {v:g}. Say set the speed to step it up and down again."
     if t == "stop":
         stepper["on"] = False
         if motor_link:
@@ -307,19 +392,37 @@ def do_action(a: dict, lab: str) -> str:
         remember_event("motor", "student restarted the motor")
         return "Starting the motor again."
     if t == "report":
-        threading.Thread(target=send_report, daemon=True).start()
+        to_ta = bool(a.get("to_ta")) or source == "ta"
+        threading.Thread(target=send_report, args=(to_ta, source == "student"), daemon=True).start()
+        if source == "ta":
+            return "Writing the report now. It'll be my next text."
+        if to_ta:
+            return ("Here's your lab report. I'm texting a copy to your TA too." if NOTIFY_URL
+                    else "Here's your lab report. TA texting isn't set up, so save it as a PDF and send it yourself.")
         return "Here's your lab report. You can save it as a PDF."
     return "I'm not able to do that one yet."
 
 
-def quick_intent(q: str, lab: str = ""):
+TA_WORDS = r"\b(t\.?\s?a\.?|tas|teacher|professor|instructor|teaching assistant)\b"
+
+
+def quick_intent(q: str, lab: str = "", source: str = "student"):
     """Common commands we can catch instantly, without waiting for the AI."""
     s = q.lower()
     measured = re.search(r"\d", s) or re.search(MEASURE_WORDS, s)
+    if source == "ta" and ta["approval"]:
+        if re.search(r"^\W*(ok|okay|yes|yep|yeah|approve[d]?|allow(ed)?|go ahead|sure)\b", s):
+            return {"type": "approve"}
+        if re.search(r"^\W*(no|nope|deny|denied|block|don'?t|do not)\b", s):
+            return {"type": "deny"}
     if re.search(r"\b(undo|revert|put it back|change it back)\b|\bgo back\b(?!\s+to\b)", s):
         return {"type": "undo"}
-    if re.search(r"\b(show|give|make|create|generate|send|open|write|get|pull up|need|want|see)\b.*\b(report|summary|recap)\b|\bsummari[sz]e\b", s):
-        return {"type": "report"}
+    report_words = r"\b(show|give|make|create|generate|send|open|write|get|pull up|need|want|see|text|email|share|forward)\b.*\b(report|summary|recap)\b|\bsummari[sz]e\b"
+    if re.search(report_words, s):
+        return {"type": "report", "to_ta": bool(re.search(TA_WORDS, s))}
+    hold = re.search(r"\b(hold|keep|lock)\b.*?\b(\d+(\.\d+)?)\b", s)
+    if hold and not re.search(r"\bk ?[pid]\b", s):
+        return {"type": "hold", "value": float(hold.group(2))}
     if re.search(r"^\W*stop\W*$|\bstop (the )?(motor|wheel|robot|it|everything)\b", s):
         return {"type": "stop"}
     if re.search(r"\b(start|resume|restart)\b.*\b(motor|wheel|robot|test|it)\b", s):
@@ -363,46 +466,58 @@ def parse_json(text):
         return None
 
 
-def handle_voice(question: str, lab: str):
-    """A student spoke or typed to Kelvin. Do what they asked, or answer the question."""
+def handle_voice(question: str, lab: str, source: str = "student") -> str:
+    """Someone talked to Kelvin. source "student" = voice or typing at the bench, "ta" = a text through Photon.
+    Do what they asked, or answer the question. Both share one memory, so the TA can ask about the bench."""
     question = question.strip()[:300]
     if not question:
-        return
-    action = quick_intent(question, lab)
+        return ""
+    lab = lab or "motor"
+    action = quick_intent(question, lab, source)
     say = None
     if not action:
+        who = "the TA, texting from their phone" if source == "ta" else "the student at the bench, speaking out loud"
         context = {
+            "station": STATION,
             "lab_on_screen": lab,
             "controller_settings_on_robot": settings,
             "suggested_fix_waiting": pending_fix["motor"],
-            "target_speed_steps_between": [stepper["low"], stepper["high"]] if stepper["on"] else "motor stopped",
+            "change_waiting_for_ta_approval": ta["approval"],
+            "target_speed": ([stepper["low"], stepper["high"]] if stepper["low"] != stepper["high"] else stepper["high"])
+                            if stepper["on"] else "motor stopped",
             "motor_latest": recent["motor"],
             "cooling_latest": recent["cooling"],
-            "what_kelvin_noticed_so_far": recent["events"] or ["nothing wrong yet"],
+            "minutes_into_session": round((time.time() - session["started"]) / 60, 1),
+            "mistakes_caught": session["mistakes"], "fixes_that_worked": session["fixed"],
+            "session_log": (session["events"][-30:] if source == "ta" else recent["events"]) or ["nothing wrong yet"],
         }
         prompt = (
             "You are Kelvin, a friendly lab partner watching a student's experiment through live sensor data. "
             "Labs: 'motor' is a robot wheel whose speed is held at a target by the student's controller "
             "(settings kp, ki, kd). 'cooling' is a cup of hot water with a temperature probe; 'expected' is what "
-            "Newton's law of cooling predicts.\n"
-            "Decide whether the student wants you to DO something. You can take at most one of these actions:\n"
+            "Newton's law of cooling predicts. The session_log is everything that happened, including what the "
+            "student said to you out loud and what the TA texted.\n"
+            f"You are talking to {who}.\n"
+            "Decide whether they want you to DO something. You can take at most one of these actions:\n"
             '- {"type":"apply_fix"}: send the suggested fix that is waiting to the robot.\n'
             '- {"type":"set_fix","kp":number,"ki":number,"kd":number,"apply":bool}: change the suggested fix. '
             "Include only the settings that change. Relative requests like 'a third of that', 'half', 'a bit lower' "
             "are relative to the suggested fix waiting if there is one, otherwise to the settings on the robot; "
             "work out the actual number. Set apply to true only if they also asked to apply or send it now.\n"
             '- {"type":"undo"}: go back to the previous settings.\n'
-            '- {"type":"switch_lab","lab":"motor" or "cooling"}: show the other lab.\n'
-            '- {"type":"set_target","value":number}: change the target speed the wheel steps up to.\n'
+            '- {"type":"switch_lab","lab":"motor" or "cooling"}: show the other lab on the bench screen.\n'
+            '- {"type":"set_target","value":number}: make the wheel step up and down to this speed.\n'
+            '- {"type":"hold","value":number}: hold the wheel at one steady speed.\n'
             '- {"type":"stop"} or {"type":"start"}: stop or restart the motor.\n'
-            '- {"type":"report"}: show a written summary report of this session.\n'
+            '- {"type":"report","to_ta":bool}: write a summary report of this session; to_ta true texts it to the TA.\n'
             "If they are asking a question or chatting, action is null and you answer in say: at most three "
-            "short sentences that will be read out loud, plain words, no markdown, use the live numbers when "
-            "they help. You cannot save files, send emails, or do anything not listed above, so never claim to. "
+            "short sentences, plain words, no markdown, use the real numbers from the context when they help. "
+            + ("Your answer is sent as a text message. " if source == "ta" else "Your answer is read out loud. ")
+            + "You cannot save files, send email, or do anything not listed above, so never claim to. "
             "If you don't know, say so.\n"
             'Reply with JSON only: {"say": "...", "action": null or one action object}\n'
             f"Live context: {json.dumps(context)}\n"
-            f"Student says: {question}"
+            f"{'TA' if source == 'ta' else 'Student'} says: {question}"
         )
         reply = parse_json(ask_llm(prompt, timeout=12, max_tokens=250, json_mode=True))
         if reply:
@@ -410,12 +525,21 @@ def handle_voice(question: str, lab: str):
             say = str(reply.get("say") or "").strip() or None
         else:
             action = backup_intent(question)
-            if not action:
+            if not action and source == "ta":           # no AI: still give the TA a useful status text
+                last = next((e for e in reversed(session["events"]) if "[chat]" not in e), "nothing has gone wrong yet")
+                say = (f"{STATION}: {session['mistakes']} mistakes caught, {session['fixed']} fixed. Settings kp "
+                       f"{settings['kp']:g}, ki {settings['ki']:g}, kd {settings['kd']:g}. Latest: {last}")
+            elif not action:
                 say = ("I can't reach my AI right now. I can still apply a fix, undo, switch labs, "
-                       "change the speed, or show your report.")
-    text = do_action(action, lab) if action else (say or "Sorry, I didn't catch that.")
-    print(f"[voice] {question} -> action={action} -> {text}")
-    send({"type": "answer", "question": question, "text": text})
+                       "change the speed, or show the report.")
+    text = do_action(action, lab, source) if action else (say or "Sorry, I didn't catch that.")
+    print(f"[{source}] {question} -> action={action} -> {text}")
+    remember_event("chat", f"{'TA texted' if source == 'ta' else 'student said'}: {question!r}. Kelvin: {text}")
+    if source == "student":
+        send({"type": "answer", "question": question, "text": text})
+    elif action and action.get("type") not in ("approve", "deny", "report"):
+        send({"type": "answer", "question": question, "from": "ta", "text": text})   # the TA changed the bench
+    return text
 
 
 def build_report():
@@ -435,7 +559,7 @@ def build_report():
         summary = (f"In {mins} minute{'s' if mins != 1 else ''}, Kelvin caught {m} mistake{'s' if m != 1 else ''} "
                    f"and confirmed {f} fix{'es' if f != 1 else ''} that worked. The controller settings are now "
                    f"kp {settings['kp']:g}, ki {settings['ki']:g}, kd {settings['kd']:g}.")
-        return {
+    return {
         "type": "report",
         "summary": summary,
         "minutes": mins,
@@ -445,8 +569,20 @@ def build_report():
     }
 
 
-def send_report():
-    send(build_report())
+def send_report(to_ta: bool = False, show: bool = True):
+    report = build_report()
+    if show:
+        send(report)
+    if to_ta:
+        notify(
+            "report",
+            f"Lab report from {STATION}: {report['summary']}",
+            minutes=report["minutes"],
+            mistakes=report["mistakes"],
+            fixed=report["fixed"],
+            settings=report["settings"],
+        )
+        remember_event("chat", "the lab report was requested for the TA")
 
 
 def run_stepper():
@@ -462,18 +598,31 @@ def run_stepper():
 def diagnose(lab: str, issue: str, facts: dict, fix: dict | None = None):
     """Send a diagnosis. The AI call runs in a background thread so nothing blocks."""
     text = TEMPLATES[issue].format(**facts)
-    if issue in ("fixed", "probe_back"):
-        pending_fix[lab] = None
-        session["fixed"] += 1
+    good = issue in OK_ISSUES
+    if good:
+        if issue != "drag_gone":                       # drag was physical, so any gain fix still stands
+            pending_fix[lab] = None
+            session["fixed"] += 1
+        if ta["open_since"] and (issue != "drag_gone" or ta["open_issue"] == "drag"):
+            if ta["stuck_sent"]:
+                notify("resolved", f"{STATION} is back on track. {text}")
+            ta.update(open_since=None, open_issue="", open_what="", stuck_sent=False, failed_fixes=0)
     else:
         session["mistakes"] += 1
         if fix:
             pending_fix[lab] = fix
+        if not ta["open_since"]:
+            ta.update(open_since=time.time(), open_issue=issue, open_what=text)
+        if issue == "not_fixed":
+            ta["failed_fixes"] += 1
+            if ta["failed_fixes"] >= 2 and not ta["stuck_sent"]:
+                ta["stuck_sent"] = True
+                notify("stuck", f"{STATION} has tried {ta['failed_fixes']} fixes and the wheel is still "
+                                f"overshooting by {facts.get('after')} percent. They may need you.")
 
     def worker():
-        final = ai_rewrite(issue, facts, text) if issue not in ("fixed", "probe_back") else text
-        msg = {"type": "diagnosis", "lab": lab,
-               "issue": "ok" if issue in ("fixed", "probe_back") else issue, "text": final}
+        final = ai_rewrite(issue, facts, text) if not good else text
+        msg = {"type": "diagnosis", "lab": lab, "issue": "ok" if good else issue, "text": final}
         if fix:
             msg["fix"] = fix
         print(f"[diagnosis] {lab} {issue}: {final}  fix={fix}")
@@ -496,6 +645,14 @@ class MotorWatcher:
         self.verify = False
         self.skip_next = False     # ignore the step that was already running when a fix was applied
         self.last_over = None
+        # drag detection: once the wheel has settled at a steady target, watch for something slowing it down
+        self.settle_count = 0
+        self.settled = False
+        self.base_motor = 0.0
+        self.drag_count = 0
+        self.in_drag = False
+        self.recover_count = 0
+        self.disturbed = False     # this step had drag in it, so don't judge the student's settings on it
 
     def arm_verify(self):
         self.verify = True
@@ -509,11 +666,45 @@ class MotorWatcher:
             self.start_speed = speed
             self.target = target
             self.samples = []
+            self.settle_count, self.settled, self.drag_count = 0, False, 0
+            self.disturbed = self.in_drag
         self.samples.append((speed, motor))
+        self.watch_drag(speed, motor)
+
+    def watch_drag(self, speed, motor):
+        if abs(self.target) < 5:
+            return
+        err = (self.target - speed) / abs(self.target) * (1 if self.target > 0 else -1)   # + means too slow
+        if self.in_drag:
+            self.recover_count = self.recover_count + 1 if abs(err) < 0.08 else 0
+            if self.recover_count >= 25:                 # back on target for half a second
+                self.in_drag = False
+                self.settled, self.settle_count = True, 25
+                diagnose("motor", "drag_gone", {})
+            return
+        if not self.settled:
+            self.settle_count = self.settle_count + 1 if abs(err) < 0.10 else 0
+            if self.settle_count >= 25:                  # steady for half a second
+                self.settled = True
+                self.base_motor = statistics.mean(abs(m) for _, m in self.samples[-25:])
+            return
+        rise = abs(motor) - self.base_motor
+        if err > 0.20 and rise >= max(15.0, 0.15 * self.base_motor):
+            self.drag_count += 1
+        else:
+            self.drag_count = 0
+            if abs(err) < 0.05:                          # slowly track the normal motor power
+                self.base_motor = 0.98 * self.base_motor + 0.02 * abs(motor)
+        if self.drag_count >= 15:                        # slowed and fighting for 0.3 seconds
+            self.in_drag, self.disturbed, self.recover_count = True, True, 0
+            power = round(rise / max(self.base_motor, 1.0) * 100)
+            diagnose("motor", "drag", {"drop": round(err * 100), "power": power})
 
     def finish(self):
         if self.skip_next:
             self.skip_next = False
+            return
+        if self.disturbed:                               # drag made this step meaningless for tuning
             return
         step = self.target - self.start_speed
         if len(self.samples) < 25 or abs(step) < 5 or self.target == 0:
@@ -605,7 +796,11 @@ class CoolingWatcher:
             self.k = num / den
 
     def add(self, t, temp):
-        if self.t0 is None or temp > (self.temp0 or 0) + 10:   # new run: hot water poured
+        # A run starts at the hottest reading. While the probe is still heating up (just dropped in hot
+        # water, or fresh water poured), keep moving the start forward so the cooling fit only sees cooling.
+        if self.t0 is None or temp > self.temp0 + 0.5:
+            if self.flagged:
+                diagnose("cooling", "probe_back", {})
             self.t0, self.temp0, self.k, self.good, self.flagged = t, temp, None, [], False
         exp = self.expected(t)
         if exp is not None and exp - temp > COOL_DROP_ALERT and not self.flagged:
@@ -685,6 +880,7 @@ class FakeMotor:
     def __init__(self):
         self.kp, self.ki, self.kd = settings["kp"], settings["ki"], settings["kd"]
         self.target, self.speed, self.vel = 40.0, 0.0, 0.0
+        self.brake = False
         threading.Thread(target=self.run, daemon=True).start()
 
     def write(self, text):
@@ -701,8 +897,11 @@ class FakeMotor:
             wn, zeta = 7.0, max(0.08, min(1.0, 1.0 / max(self.kp, 0.01)))
             self.vel += (wn * wn * (self.target - self.speed) - 2 * zeta * wn * self.vel) * 0.02
             self.speed += self.vel * 0.02
+            if self.brake:                 # type 'brake' in the terminal: like pressing an eraser on the wheel
+                self.vel -= 30.0 * self.speed * 0.02
             sp = self.speed + random.uniform(-0.4, 0.4)
-            motor = max(-255, min(255, sp * 2 + self.vel * 0.4))
+            effort = 4.0 * (self.target - self.speed) if self.brake else 0.0   # the controller fighting back
+            motor = max(-255, min(255, sp * 2 + self.vel * 0.4 + effort))
             on_line(f"T,{int((time.time() - t0) * 1000)},{self.target:.1f},{sp:.1f},{motor:.0f},0")
 
 
@@ -742,7 +941,7 @@ async def ws_endpoint(ws: WebSocket):
                 else:
                     send({"type": "answer", "question": "Apply fix", "text": problem})
             elif msg.get("type") == "report":
-                threading.Thread(target=send_report, daemon=True).start()
+                threading.Thread(target=send_report, args=(bool(msg.get("to_ta")),), daemon=True).start()
             elif msg.get("type") == "request_ta":
                 try:
                     report = await asyncio.to_thread(build_report)
@@ -760,6 +959,29 @@ async def ws_endpoint(ws: WebSocket):
         pass
     finally:
         clients.discard(ws)
+
+
+@app.post("/api/lines")
+def api_lines(body: dict):
+    """Readings from a board plugged into a different laptop (relay.py). Body: {"lines": ["C,1000,71.2", ...]}"""
+    lines = body.get("lines") if isinstance(body, dict) else None
+    if not isinstance(lines, list):
+        return {"ok": False, "error": "send {\"lines\": [...]}"}
+    for line in lines[:500]:
+        if isinstance(line, str):
+            on_line(line)
+    return {"ok": True, "count": len(lines)}
+
+
+@app.post("/api/ask")
+def api_ask(body: dict):
+    """Photon sends a text here and texts back Kelvin's reply.
+    Body: {"question": "how is station 3 doing?", "from": "ta"}. Reply: {"text": "..."}"""
+    question = str(body.get("question") or body.get("text") or "").strip()
+    if not question:
+        return {"text": "", "error": "no question"}
+    source = "student" if str(body.get("from", "ta")).lower() == "student" else "ta"
+    return {"text": handle_voice(question, str(body.get("lab") or ""), source), "station": STATION}
 
 
 @app.get("/ready")
@@ -783,8 +1005,21 @@ def health():
 
 # ---------------------------------------------------------------- main
 
+def lan_ip():
+    """This laptop's address on the Wi-Fi or hotspot. Sends nothing, just asks the OS which network it would use."""
+    import socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
+        return ip
+    except OSError:
+        return "this-laptops-ip"
+
+
 def main():
-    global motor_link
+    global motor_link, ROOM_TEMP, STATION, NOTIFY_URL
     ap = argparse.ArgumentParser()
     ap.add_argument("--motor-port", help="robot COM port, e.g. COM5 or /dev/ttyACM0")
     ap.add_argument("--cooling-port", help="cooling probe COM port, e.g. COM6")
@@ -795,14 +1030,19 @@ def main():
     ap.add_argument("--low", type=float, default=40, help="low target speed for the step test")
     ap.add_argument("--high", type=float, default=100, help="high target speed for the step test")
     ap.add_argument("--step-seconds", type=float, default=4, help="seconds between target changes")
+    ap.add_argument("--room-temp", type=float, default=ROOM_TEMP, help="room temperature in C, for the cooling lab")
+    ap.add_argument("--station", default=STATION, help='name the TA sees in texts, e.g. "Station 3"')
+    ap.add_argument("--notify-url", default=NOTIFY_URL, help="Photon service URL that texts the TA")
     args = ap.parse_args()
+    ROOM_TEMP, STATION, NOTIFY_URL = args.room_temp, args.station, args.notify_url
     settings.update(kp=args.kp, ki=args.ki, kd=args.kd)
     stepper.update(low=args.low, high=args.high, seconds=args.step_seconds)
 
     cooling = None
     if args.fake:
         motor_link, cooling = FakeMotor(), FakeCooling()
-        print("Fake boards running. Type 'bad' for a bad controller, 'out'/'in' to move the probe.")
+        print("Fake boards running. Type 'bad' for a bad controller, 'brake' to press on the wheel,\n"
+              "'out'/'in' to move the probe, 'hold 80' for a steady speed, 'ta <message>' to text as the TA.")
     else:
         if args.motor_port:
             motor_link = SerialLink(args.motor_port)
@@ -811,8 +1051,19 @@ def main():
 
     def console():
         while True:
-            cmd = input().strip()
-            if cmd == "bad" and motor_link:
+            try:
+                cmd = input().strip()
+            except (EOFError, OSError):
+                return                     # no keyboard attached (running in the background)
+            if cmd == "brake" and isinstance(motor_link, FakeMotor):
+                motor_link.brake = not motor_link.brake
+                print("Brake ON (type brake again to release)" if motor_link.brake else "Brake released")
+            elif cmd.startswith("hold "):
+                print(do_action({"type": "hold", "value": cmd.split()[1]}, "motor"))
+            elif cmd.startswith("ta "):
+                threading.Thread(target=lambda q=cmd[3:]: print("[reply to TA]", handle_voice(q, "", "ta")),
+                                 daemon=True).start()
+            elif cmd == "bad" and motor_link:
                 settings.update(kp=6.0)
                 motor_link.write(f"K,{settings['kp']},{settings['ki']},{settings['kd']}")
                 motor_watch.flagged = False
@@ -826,10 +1077,13 @@ def main():
                 motor_link.write(cmd)    # anything else goes straight to the robot, e.g. S,80
     threading.Thread(target=console, daemon=True).start()
     threading.Thread(target=run_stepper, daemon=True).start()
+    threading.Thread(target=stuck_watchdog, daemon=True).start()
 
     ai = "Gemini" if os.environ.get("GEMINI_API_KEY") else "Claude" if os.environ.get("ANTHROPIC_API_KEY") else None
     print("\n  Dashboard: open http://localhost:8000 in Edge")
     print(f"  AI: {ai} key found" if ai else "  AI: NO KEY SET. Kelvin will use plain templates and can't answer questions well.")
+    print(f"  Other laptops reach this one at: http://{lan_ip()}:8000   (for relay.py and the Photon service)")
+    print(f"  TA texts: {'on, sending to ' + NOTIFY_URL if NOTIFY_URL else 'off (no NOTIFY_URL set)'}   Station: {STATION}")
     print()
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
 
