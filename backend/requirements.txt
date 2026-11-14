@@ -1,4 +1,5 @@
 fastapi
-uvicorn
 pyserial
+pyserial==3.5
+uvicorn
 websockets
