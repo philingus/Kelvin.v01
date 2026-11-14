@@ -216,7 +216,7 @@
   <div class="rsheet">
     <div class="rhead">
       <div><h2>Lab report</h2><div class="rdate" id="rDate"></div></div>
-      <div class="ractions"><button type="button" class="rprint" id="rPrint">Save as PDF / Print</button><button type="button" class="rclose" id="rClose">Close</button></div>
+      <div class="ractions"><button type="button" class="rclose" id="rTa" title="Text this report to the TA">Text to TA</button><button type="button" class="rprint" id="rPrint">Save as PDF / Print</button><button type="button" class="rclose" id="rClose">Close</button></div>
     </div>
     <div class="rlabel">Kelvin's summary</div>
     <p class="rsummary" id="rSummary"></p>
@@ -255,6 +255,7 @@ const marks = { motor: [], cooling: [] };            // chart annotations {t, te
 const state = { motor: "stable", cooling: "stable" }; // stable | mistake | fixing | fixed
 const message = { motor: "", cooling: "" };
 const fixes = { motor: null, cooling: null };
+const lastIssue = { motor: "", cooling: "" };         // what the latest open mistake was, e.g. "drag"
 const log = [];                                       // {lab, time, what, fix, result}
 let fixedTimer = null;
 
@@ -298,6 +299,7 @@ function onDiagnosis(d) {
     const prev = [...log].reverse().find(e => e.lab === L && e.result === "applied");
     if (prev) prev.result = "partial";
     state[L] = "mistake";
+    lastIssue[L] = d.issue || "";
     fixes[L] = d.fix || null;
     log.push({ lab: L, time: clock(), what: shortWhat(d), fix: d.fix ? fixText(d.fix) : handFix(d), result: "open" });
     marks[L].push({ t: nowT(L), text: shortMark(d), good: false });
@@ -308,16 +310,19 @@ function onDiagnosis(d) {
 function shortWhat(d) {
   const m = (d.text || "").match(/\d+ (percent|degrees)/);
   const names = { overshoot: "Wheel overshot its target", slow: "Wheel too slow to reach target", steady_error: "Wheel settled below target",
-                  saturated: "Motor maxed out", jitter: "Motor power jittering", probe_out: "Reading dropped off the curve", not_fixed: "Still overshooting" };
+                  saturated: "Motor maxed out", jitter: "Motor power jittering", probe_out: "Reading dropped off the curve", not_fixed: "Still overshooting",
+                  drag: "Something dragging on the wheel" };
   return (names[d.issue] || "Something looks wrong") + (m ? " by " + m[0] : "");
 }
 function shortMark(d) {
   const m = (d.text || "").match(/(\d+) (percent|degrees)/);
   if (d.issue === "probe_out") return "probe out? " + (m ? "-" + m[1] + "°" : "");
   if (d.issue === "overshoot" || d.issue === "not_fixed") return "overshot " + (m ? m[1] + "%" : "");
+  if (d.issue === "drag") return "drag! " + (m ? "-" + m[1] + "%" : "");
   return "look here";
 }
-const handFix = d => d.issue === "probe_out" ? "Put the probe back in the water" : "Check the setup by hand";
+const HAND = { probe_out: "Put the probe back in the water", drag: "Take whatever is touching the wheel off it" };
+const handFix = d => HAND[d.issue] || "Check the setup by hand";
 const fixText = f => Object.keys(f).map(k => k + " " + (+settings[k] || 0).toFixed(2) + " → " + (+f[k]).toFixed(2)).join(", ");
 
 let voicePick = null, lastSaid = "", lastSaidAt = 0, utter = null;
@@ -376,7 +381,7 @@ function speak(text) {
 // ------------------------------------------------------------ ask Kelvin
 const asked = { motor: "", cooling: "" };
 function onAnswer(a) {
-  asked[lab] = "You asked: " + a.question;
+  asked[lab] = a.from === "ta" ? (a.question ? "Your TA texted: " + a.question : "Message from your TA") : "You asked: " + a.question;
   message[lab] = a.text;
   render(); speak(a.text);
 }
@@ -492,6 +497,11 @@ $("reportBtn").onclick = () => {
 };
 $("rClose").onclick = () => { $("report").hidden = true; };
 $("rPrint").onclick = () => window.print();
+$("rTa").onclick = () => {
+  if (live && ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "report", to_ta: true })); $("rTa").textContent = "Sent to TA ✓"; }
+  else $("rTa").textContent = "Needs the backend";
+  setTimeout(() => { $("rTa").textContent = "Text to TA"; }, 4000);
+};
 document.addEventListener("keydown", e => { if (e.key === "Escape") $("report").hidden = true; });
 const pageOpened = Date.now();
 function showReport(r) {
@@ -632,7 +642,9 @@ function render() {
   $("stamp").textContent = STAMPS[st];
   $("verdictText").textContent =
     st === "stable" ? L.stable :
-    st === "mistake" ? (lab === "motor" ? "Something is wrong with the student's controller. Kelvin found the cause below." : "A reading broke away from the physics. Kelvin found the cause below.") :
+    st === "mistake" ? (lab === "motor"
+      ? (lastIssue.motor === "drag" ? "Something physical is slowing the wheel. The settings are fine." : "Something is wrong with the student's controller. Kelvin found the cause below.")
+      : "A reading broke away from the physics. Kelvin found the cause below.") :
     st === "fixing" ? "The fix is on the robot. Kelvin is watching the next run." :
     "Kelvin's fix worked. Back on track.";
   $("caught").textContent = log.filter(e => e.lab === lab).length;
@@ -646,7 +658,7 @@ function render() {
       '<div class="change">' + k + ' <span class="old">' + (+settings[k] || 0).toFixed(2) + '</span><span class="arrow">→</span><span class="new">' + (+f[k]).toFixed(2) + "</span></div>").join("");
     $("applyBtn").disabled = false;
   } else {
-    $("rxBody").innerHTML = '<div class="empty">' + (st === "mistake" ? (lab === "cooling" ? "Put the probe back in the water." : "Check the setup by hand.") : "Nothing to fix right now.") + "</div>";
+    $("rxBody").innerHTML = '<div class="empty">' + (st === "mistake" ? handFix({ issue: lastIssue[lab] }) + "." : "Nothing to fix right now.") + "</div>";
     $("applyBtn").disabled = true;
   }
   $("settingsLine").textContent = lab === "motor" ? "now: kp " + (+settings.kp).toFixed(2) + " · ki " + (+settings.ki).toFixed(2) + " · kd " + (+settings.kd).toFixed(2) : "";
