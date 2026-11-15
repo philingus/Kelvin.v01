@@ -68,6 +68,7 @@ clients: set = set()
 loop: asyncio.AbstractEventLoop | None = None
 motor_link = None          # object with .write(str) for sending commands to the robot
 calib_link = None          # the robot running minseg_balance.ino (calibration lab)
+dip_link = None            # the Uno running kelvin_dip.ino (time constant lab)
 DEFAULT_LAB = "motor"      # the lab the dashboard opens on
 settings = {"kp": 4.0, "ki": 10.0, "kd": 0.0}     # good settings for our MinSeg; --kp/--ki override
 
@@ -139,13 +140,30 @@ TEMPLATES = {
               "Say arm when you want to test the wheels.",
     "cal_fixed": "That worked. You were {before} degrees off before, and now you're within {after}. "
                  "The robot knows which way is up. Say arm to test the wheels.",
+    # time constant lab (dip the probe into hot water for a set time; kelvin_dip.ino on the Uno)
+    "dip_late": "You held the probe in for {dwell} seconds, not {target}. If you use {target} in the formula, the time "
+                "constant comes out as {tau_assumed} seconds, but it's really {tau_actual}. That's {pct} percent off. "
+                "{advice}",
+    "dip_early": "You pulled the probe out after {dwell} seconds, not {target}. If you use {target} in the formula, the "
+                 "time constant comes out as {tau_assumed} seconds, but it's really {tau_actual}. That's {pct} percent off. "
+                 "{advice}",
+    "dip_timing": "You held the probe in for {dwell} seconds, not {target}. {advice}",
+    "dip_not_reset": "The probe started that dip at {start} degrees, {above} above room temperature. It hadn't cooled "
+                     "back down, so the result isn't a clean step. Dry it off and wait until it reads about {room}, then dip again.",
+    "dip_need_water": "I need the water temperature before I can work out the time constant. "
+                      "Hold the probe in the water for fifteen seconds, or tell me the temperature.",
+    "dip_water": "Got it. The water is {water} degrees. Let the probe cool back to room temperature, then do a {target} second dip.",
+    "dip_ok": "Good dip. {dwell} seconds in the water, and the time constant comes out as {tau} seconds.",
+    "dip_fixed": "That worked. Your timing was off by {before} seconds before, and now it's off by {after}. "
+                 "The time constant is {tau} seconds.",
     "wheels_ok": "The wheels push toward the lean, the way they should: when it tips, they drive under it to catch it. "
                  "Say stop when you're done.",
 }
 OK_ISSUES = ("fixed", "fixed_gap", "fixed_reach", "fixed_sat", "probe_back", "drag_gone",
-             "cal_ok", "cal_fixed", "wheels_ok")      # these turn the dashboard green
-NOT_A_FIX = ("drag_gone", "cal_ok", "wheels_ok")       # good news, but not a fix of an earlier mistake
-CAL_ISSUES = ("cal_tilted", "cal_sideways", "cal_moved", "cal_rejected_tilt", "cal_sensor", "cal_ok", "cal_fixed", "wheels_ok")
+             "cal_ok", "cal_fixed", "wheels_ok", "dip_ok", "dip_fixed", "dip_water")      # these turn the dashboard green
+NOT_A_FIX = ("drag_gone", "cal_ok", "wheels_ok", "dip_ok", "dip_water")       # good news, but not a fix of an earlier mistake
+CAL_ISSUES = ("cal_tilted", "cal_sideways", "cal_moved", "cal_rejected_tilt", "cal_sensor", "cal_ok", "cal_fixed", "wheels_ok",
+              "dip_late", "dip_early", "dip_timing", "dip_not_reset", "dip_need_water", "dip_water", "dip_ok", "dip_fixed")   # spoken as written
 
 
 # Gemini models to try, newest first. gemini-2.5-flash was shut down Oct 16, 2026.
@@ -243,7 +261,7 @@ def ai_rewrite(issue: str, facts: dict, fallback: str) -> str:
 
 
 # what Kelvin knows right now, used to answer questions
-recent = {"motor": None, "cooling": None, "calib": None, "events": []}
+recent = {"motor": None, "cooling": None, "calib": None, "dip": None, "events": []}
 
 
 session = {"started": time.time(), "events": [], "mistakes": 0, "fixed": 0, "applied": 0}
@@ -330,8 +348,8 @@ def stuck_watchdog():
 
 SAFE = {"kp": (0.01, 20.0), "ki": (0.0, 60.0), "kd": (0.0, 5.0)}      # Kelvin applies these on its own
 HARD = {"kp": (0.001, 60.0), "ki": (0.0, 200.0), "kd": (0.0, 15.0)}    # past SAFE but inside HARD needs the TA's OK
-pending_fix = {"motor": None, "cooling": None, "calib": None}   # the suggested fix waiting for "apply"
-open_diag = {"motor": None, "cooling": None, "calib": None}     # the mistake on screen right now, resent when a dashboard (re)connects
+pending_fix = {"motor": None, "cooling": None, "calib": None, "dip": None}   # the suggested fix waiting for "apply"
+open_diag = {"motor": None, "cooling": None, "calib": None, "dip": None}     # the mistake on screen right now, resent when a dashboard (re)connects
 undo_stack = []                                  # earlier settings, newest last
 stepper = {"low": 30.0, "high": 80.0, "on": True, "seconds": 4.0}   # RPM; our wheel tops out ~130
 MEASURE_WORDS = r"\b(half|third|quarter|double|twice|times|percent|more|less|lower|higher|bigger|smaller|bit)\b"
@@ -403,6 +421,28 @@ def do_action(a: dict, lab: str, source: str = "student") -> str:
         apply_settings(vals, "applied with TA approval")
         send({"type": "answer", "question": "", "from": "ta", "text": f"Your TA approved it. {fmt_fix(vals)} is on the robot now."})
         return f"Approved. {fmt_fix(vals)} is on the robot at {STATION}. I'll tell you if it causes trouble."
+    if t == "apply_fix" and pending_fix["dip"] and (lab == "dip" or not (pending_fix["motor"] or pending_fix["calib"])):
+        t = "cue_on"
+    if t in ("cue_on", "cue_off"):
+        if not dip_link:
+            return "The temperature probe for the dip lab isn't connected."
+        return dip_watch.set_cue(t == "cue_on")
+    if t == "set_water":
+        try:
+            v = float(a.get("value"))
+        except (TypeError, ValueError):
+            return "I didn't catch the water temperature."
+        if not 25 <= v <= 100:
+            return f"{v:g} degrees doesn't sound like hot water, so I left it alone."
+        return dip_watch.set_water(v, "student")
+    if t == "set_dwell":
+        try:
+            v = float(a.get("value"))
+        except (TypeError, ValueError):
+            return "I didn't catch the time."
+        if not 1 <= v <= 30:
+            return f"{v:g} seconds is outside 1 to 30, so I left the dip time alone."
+        return dip_watch.set_target(v)
     if t == "calibrate" or (t == "apply_fix" and pending_fix["calib"] and (lab == "calib" or not pending_fix["motor"])):
         if not calib_link:
             return "The tilt sensor isn't connected, so I can't calibrate."
@@ -452,9 +492,11 @@ def do_action(a: dict, lab: str, source: str = "student") -> str:
         return f"Undone. We're back to kp {settings['kp']:g}, ki {settings['ki']:g}, kd {settings['kd']:g}."
     if t == "switch_lab":
         want = str(a.get("lab", "")).lower()
-        to = "cooling" if want.startswith("cool") else "calib" if want.startswith(("cal", "tilt", "bal")) else "motor"
+        to = "cooling" if want.startswith("cool") else "calib" if want.startswith(("cal", "tilt", "bal")) else \
+             "dip" if want.startswith(("dip", "time", "tau")) else "motor"
         send({"type": "action", "action": "switch_lab", "lab": to})
-        return {"cooling": "Here's the cooling lab.", "calib": "Here's the calibration lab."}.get(to, "Here's the motor lab.")
+        return {"cooling": "Here's the cooling lab.", "calib": "Here's the calibration lab.",
+                "dip": "Here's the time constant lab."}.get(to, "Here's the motor lab.")
     if t == "set_target":
         try:
             v = float(a.get("value"))
@@ -522,6 +564,14 @@ def quick_intent(q: str, lab: str = "", source: str = "student"):
             return {"type": "stop"}
         if re.search(r"\barm\b|\b(enable|turn on|start) (the )?(motors?|wheels?)\b", s):
             return {"type": "arm"}
+    if dip_link and not question:
+        num = re.search(r"(\d+(\.\d+)?)", s)
+        if re.search(r"\b(cue|beep|buzzer|timer)\b", s):
+            return {"type": "cue_off" if re.search(r"\b(off|stop|disable|no)\b", s) else "cue_on"}
+        if num and re.search(r"\bwater\b", s) and re.search(r"\bdegrees?\b|\bis\b|\bset\b", s):
+            return {"type": "set_water", "value": float(num.group(1))}
+        if num and re.search(r"\bseconds?\b", s) and re.search(r"\b(dip|dwell|target|hold|time)\b", s) and lab == "dip":
+            return {"type": "set_dwell", "value": float(num.group(1))}
     if re.search(r"\b(undo|revert|put it back|change it back)\b|\bgo back\b(?!\s+to\b)", s):
         return {"type": "undo"}
     report_words = r"\b(show|give|make|create|generate|send|open|write|get|pull up|need|want|see|text|email|share|forward)\b.*\b(report|summary|recap)\b|\bsummari[sz]e\b"
@@ -544,9 +594,10 @@ def quick_intent(q: str, lab: str = "", source: str = "student"):
         base = waiting.get(key, settings[key])
         factor = {"third": 1 / 3, "half": 0.5, "quarter": 0.25, "double": 2, "twice": 2}[rel.group(1)]
         return {"type": "set_fix", key: round(base * factor, 3), "apply": bool(re.search(r"\bapply\b", s))}
-    m = re.search(r"\b(switch|go|change|move|show|open|take me)\b.*\b(cooling|cup|temperature|water|motor|wheel|robot|calibration|tilt|balance)\b", s)
+    m = re.search(r"\b(switch|go|change|move|show|open|take me)\b.*\b(dip|time constant|cooling|cup|temperature|water|motor|wheel|robot|calibration|tilt|balance)\b", s)
     if m and not measured:
-        to = "cooling" if m.group(2) in ("cooling", "cup", "temperature", "water") else \
+        to = "dip" if m.group(2) in ("dip", "time constant") else \
+             "cooling" if m.group(2) in ("cooling", "cup", "temperature", "water") else \
              "calib" if m.group(2) in ("calibration", "tilt", "balance") else "motor"
         if to != lab:                     # already on that lab? then it's probably a question, let the AI answer
             return {"type": "switch_lab", "lab": to}
@@ -600,10 +651,19 @@ ACTION_WORDS = {
     "switch_lab": r"switch|cooling|cup|temperature|motor|wheel|show|open|lab|go to|calibrat|tilt",
     "calibrate": r"calibrat|again|redo|retry|try|fix|apply|go ahead|do it|\byes\b",
     "arm": r"\barm|enable|turn on|start|wheel|motor|test",
+    "cue_on": r"cue|beep|buzz|timer|fix|apply|go ahead|do it|\byes\b|help",
+    "cue_off": r"cue|beep|buzz|timer|off|stop",
+    "set_water": r"water|\d",
+    "set_dwell": r"second|dip|dwell|\d",
 }
 
 
 def status_line() -> str:
+    if DEFAULT_LAB == "dip":
+        d = dip_watch.last
+        dip = (f"Last dip {d['dwell']:.1f} seconds against a {dip_watch.target:g} second target" if d else "No dips yet")
+        m, f = session["mistakes"], session["fixed"]
+        return f"{STATION}: {m} mistake{'' if m == 1 else 's'} caught, {f} fixed. {dip}. Timing cue {'on' if dip_watch.cue else 'off'}."
     if DEFAULT_LAB == "calib":
         c = calib_watch.last_cal
         cal = (f"Last calibration {c['verdict']}, {abs(c['pitch']):.1f} degrees forward/back and {abs(c['roll']):.1f} sideways"
@@ -639,6 +699,7 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
             "motor_latest": recent["motor"],
             "cooling_latest": recent["cooling"],
             "calibration_latest": recent["calib"],
+            "time_constant_lab_latest": recent["dip"],
             "minutes_into_session": round((time.time() - session["started"]) / 60, 1),
             "mistakes_caught": session["mistakes"], "fixes_that_worked": session["fixed"],
             "session_log": (session["events"][-30:] if source == "ta" else recent["events"]) or ["nothing wrong yet"],
@@ -650,7 +711,10 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
             "Newton's law of cooling predicts. 'calib' is the calibration lab: the student holds a balancing robot "
             "and calibrates its tilt sensor so it learns which way is straight up; pitch is forward/back tilt from "
             "gravity (positive = toward the batteries), roll is sideways tilt; a good calibration is within 4 degrees "
-            "forward/back and 5 sideways and held still. The session_log is everything that happened, including what the "
+            "forward/back and 5 sideways and held still. 'dip' is the time constant lab: the student dips a room-temperature probe "
+            "into hot water for a target number of seconds, reads the temperature, and computes the probe's time "
+            "constant tau = -t / ln(1 - theta), where theta is how far the reading got toward the water temperature; "
+            "holding it in too long or too short while using the target time in the formula gives a wrong tau. The session_log is everything that happened, including what the "
             "student said to you out loud and what the TA texted.\n"
             f"You are talking to {who}.\n"
             "Decide whether they want you to DO something. You can take at most one of these actions:\n"
@@ -663,6 +727,9 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
             '- {"type":"switch_lab","lab":"motor", "cooling" or "calib"}: show another lab on the bench screen.\n'
             '- {"type":"calibrate"}: calibrate the tilt sensor (the student must hold the robot straight and still).\n'
             '- {"type":"arm"}: turn on the balancing motor so the wheels react to tilt.\n'
+            '- {"type":"cue_on"} or {"type":"cue_off"}: turn the dip lab timing beep on or off.\n'
+            '- {"type":"set_water","value":number}: set the hot water temperature for the dip lab.\n'
+            '- {"type":"set_dwell","value":number}: set the target dip time in seconds.\n'
             '- {"type":"set_target","value":number}: make the wheel step up and down to this speed.\n'
             '- {"type":"hold","value":number}: hold the wheel at one steady speed.\n'
             '- {"type":"stop"} or {"type":"start"}: stop or restart the motor.\n'
@@ -771,7 +838,7 @@ def diagnose(lab: str, issue: str, facts: dict, fix: dict | None = None):
         if issue not in NOT_A_FIX:                     # drag was physical, so any gain fix still stands
             pending_fix[lab] = None
             session["fixed"] += 1
-        elif lab == "calib":
+        elif lab in ("calib", "dip") and issue != "dip_water":
             pending_fix[lab] = None
         if ta["open_since"] and (issue != "drag_gone" or ta["open_issue"] in ("drag", "drag_load")):
             if ta["stuck_sent"]:
@@ -1321,6 +1388,156 @@ class CalibWatcher:
 calib_watch = CalibWatcher()
 
 
+# ---------------------------------------------------------------- time constant lab (dip)
+
+DIP_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", time.strftime("dip_%m%d_%H%M%S.csv"))
+
+
+class DipWatcher:
+    """The Uno runs kelvin_dip.ino. It times every dip of the probe into hot water and reports it on a D line.
+    Kelvin judges each dip, explains what a timing mistake does to the time constant, and can turn on the
+    board's timing cue (beep and blinking light at the target time) as the fix."""
+
+    def __init__(self):
+        self.target = 4.0
+        self.water = None
+        self.room = None
+        self.cue = False
+        self.in_water = False
+        self.last = None            # the latest finished dip
+        self.bad_before = None      # timing error (s) of the last mistimed dip, for "that worked"
+
+    def state(self):
+        return {"cue": self.cue, "target": self.target, "water": self.water, "room": self.room,
+                "in_water": self.in_water, "last": self.last}
+
+    def push(self):
+        send({"type": "dip_state", "lab": "dip", **self.state()})
+
+    def on_connect(self):
+        time.sleep(2.5)             # the Uno restarts when the port opens
+        dip_link.write(f"T,{self.target:g}")
+        if self.water:
+            dip_link.write(f"W,{self.water:g}")
+        dip_link.write(f"B,{1 if self.cue else 0}")
+        print(f"Sent dip settings to the probe board: target {self.target:g} s, water {self.water or 'not set'}, cue {'on' if self.cue else 'off'}")
+
+    def set_cue(self, on):
+        self.cue = on
+        dip_link.write(f"B,{1 if on else 0}")
+        pending_fix["dip"] = None
+        remember_event("dip", f"timing cue turned {'on' if on else 'off'}")
+        if on:
+            send({"type": "dip_cue", "lab": "dip"})
+        self.push()
+        return (f"Done. The board will beep and blink at {self.target:g} seconds. Pull the probe out on the beep, "
+                "and I'll check the next dip." if on else "The timing cue is off.")
+
+    def set_water(self, v, who="student"):
+        self.water = round(v, 1)
+        dip_link.write(f"W,{self.water:g}")
+        remember_event("dip", f"water temperature set to {self.water:g} C ({who})")
+        self.push()
+        return f"Okay, the water is {self.water:g} degrees."
+
+    def set_target(self, v):
+        self.target = v
+        dip_link.write(f"T,{v:g}")
+        remember_event("dip", f"target dip time set to {v:g} s")
+        self.push()
+        return f"Okay, dips should last {v:g} seconds."
+
+    def on_line(self, line):
+        line = line.strip()
+        if not line or line[0] not in "CEDA" or "," not in line:
+            return
+        p = line.split(",")
+        try:
+            if p[0] == "C":
+                t, temp = float(p[1]), float(p[2])
+                send({"lab": "dip", "t": t, "temp": temp, "water": self.water, "in_water": self.in_water})
+                recent["dip"] = {"probe_temp_c": temp, **self.state()}
+            elif p[0] == "E" and p[1] == "IN":
+                self.in_water = True
+                send({"type": "dip_event", "lab": "dip", "event": "in"})
+            elif p[0] == "E" and p[1] == "CUE":
+                send({"type": "dip_event", "lab": "dip", "event": "cue"})
+            elif p[0] == "A":
+                print("[probe]", line)
+                if p[1] == "ROOM":
+                    self.room = float(p[2])
+                    self.push()
+            elif p[0] == "D":
+                self.on_dip(p)
+        except (ValueError, IndexError):
+            pass
+
+    def on_dip(self, p):
+        # D,trial,insert_ms,remove_ms,dwell_s,T_start,T_read,T_water,theta,tau_assumed,tau_actual,flags
+        num = lambda x: None if x.strip().lower() == "nan" else float(x)
+        trial, dwell, start, read = int(p[1]), float(p[4]), float(p[5]), float(p[6])
+        tau_a, tau = num(p[9]), num(p[10])
+        flags = p[11].strip().split("|")
+        self.in_water = False
+        err = dwell - self.target
+        self.last = {"trial": trial, "dwell": dwell, "start": start, "read": read, "tau": tau, "tau_assumed": tau_a,
+                     "flags": flags, "error_s": round(err, 2)}
+        f = {"dwell": f"{dwell:.1f}", "target": f"{self.target:g}"}
+        fix = None
+        long_dip = dwell >= max(10.0, 2.5 * self.target)
+        if long_dip and ("NO_TWATER" in flags or "SETTLED" in flags):
+            # a long soak is how the student measures the water temperature
+            self.water = round(read, 1)
+            dip_link.write(f"W,{self.water:g}")
+            issue = "dip_water"
+            f["water"] = f"{self.water:g}"
+        elif "NO_TWATER" in flags:
+            issue = "dip_need_water"
+        elif "LATE" in flags or "EARLY" in flags:
+            if self.cue:
+                f["advice"] = "The cue is on, so pull it out the moment it beeps."
+            else:
+                f["advice"] = "Want a beep at the right moment? Say fix it."
+                fix = {"cue": 1}
+            if tau and tau_a:
+                issue = "dip_late" if "LATE" in flags else "dip_early"
+                f.update(tau_assumed=f"{tau_a:.1f}", tau_actual=f"{tau:.1f}", pct=f"{abs(tau_a - tau) / tau * 100:.0f}")
+            else:
+                issue = "dip_timing"
+            self.bad_before = abs(err)
+        elif "NOT_RESET" in flags:
+            issue = "dip_not_reset"
+            f.update(start=f"{start:.1f}", above=f"{start - (self.room or start):.1f}", room=f"{(self.room or 22):.0f}")
+        elif tau is None:
+            issue = "dip_need_water" if not self.water else "dip_timing"
+            f["advice"] = "The reading had already settled, so try a shorter dip."
+        elif self.bad_before is not None:
+            issue = "dip_fixed"
+            f.update(before=f"{self.bad_before:.1f}", after=f"{abs(err):.1f}", tau=f"{tau:.1f}")
+            self.bad_before = None
+        else:
+            issue = "dip_ok"
+            f["tau"] = f"{tau:.1f}"
+        self.last["verdict"] = issue
+        print(f"[dip] trial {trial}: {dwell:.2f} s (target {self.target:g}), {start:.1f} -> {read:.1f} C, "
+              f"tau {tau}, flags {'|'.join(flags)} -> {issue}")
+        try:
+            new = not os.path.exists(DIP_LOG)
+            os.makedirs(os.path.dirname(DIP_LOG), exist_ok=True)
+            with open(DIP_LOG, "a") as fh:
+                if new:
+                    fh.write("time,trial,dwell_s,target_s,t_start,t_read,t_water,tau_assumed,tau_actual,flags,cue,kelvin\n")
+                fh.write(f"{time.strftime('%H:%M:%S')},{trial},{dwell:.2f},{self.target:g},{start:.2f},{read:.2f},"
+                         f"{self.water or ''},{tau_a or ''},{tau or ''},{'|'.join(flags)},{int(self.cue)},{issue}\n")
+        except OSError:
+            pass
+        self.push()
+        diagnose("dip", issue, f, fix)
+
+
+dip_watch = DipWatcher()
+
+
 # ---------------------------------------------------------------- line routing
 
 def on_line(line: str):
@@ -1346,7 +1563,8 @@ def on_line(line: str):
 class SerialLink:
     """One USB board. Survives being unplugged: says so once, then reconnects when it's plugged back in."""
 
-    def __init__(self, port, baud=115200, on_connect=None):
+    def __init__(self, port, baud=115200, on_connect=None, handler=None):
+        self.handler = handler or on_line
         import serial
         self.serial, self.port, self.baud, self.on_connect = serial, port, baud, on_connect
         self.ser = serial.Serial(port, baud, timeout=1)
@@ -1381,7 +1599,7 @@ class SerialLink:
             try:
                 raw = self.ser.readline()
                 if raw:
-                    on_line(raw.decode(errors="ignore"))
+                    self.handler(raw.decode(errors="ignore"))
             except Exception:
                 self.lost()
 
@@ -1533,6 +1751,77 @@ class FakeTilt:
                     f"{wheel:.0f},{1 if self.cal else 0}")
 
 
+class FakeDip:
+    """Behaves like kelvin_dip.ino. Terminal: 'dip 6' dips the probe for 6 seconds, 'dip' dips for the target time
+    (or pulls out on the beep if the cue is on), 'soak' is a 15 second dip to measure the water."""
+
+    ROOM, WATER, TAU = 22.0, 58.0, 2.4
+
+    def __init__(self):
+        self.temp, self.target, self.tw, self.cue = self.ROOM, 4.0, None, False
+        self.trial, self.until, self.t_in, self.start, self.cued = 0, 0.0, 0.0, 0.0, False
+        self.t0 = time.time()
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def ms(self):
+        return int((time.time() - self.t0) * 1000)
+
+    def write(self, text):
+        p = text.strip().split(",")
+        try:
+            if p[0] == "W":
+                self.tw = float(p[1])
+            elif p[0] == "T":
+                self.target = float(p[1])
+            elif p[0] == "B":
+                self.cue = float(p[1]) > 0.5
+        except (ValueError, IndexError):
+            pass
+
+    def dip(self, seconds):
+        if self.until:
+            return
+        self.trial += 1
+        self.t_in, self.start, self.cued = time.time(), self.temp, False
+        self.until = self.t_in + seconds
+        dip_watch.on_line(f"E,IN,{self.trial},{self.ms()}")
+
+    def run(self):
+        dip_watch.on_line(f"A,ROOM,{self.ROOM:.2f}")
+        while True:
+            time.sleep(0.2)
+            now = time.time()
+            if self.until:
+                self.temp += (self.WATER - self.temp) * (1 - math.exp(-0.2 / self.TAU))
+                if self.cue and not self.cued and now - self.t_in >= self.target:
+                    self.cued = True
+                    dip_watch.on_line(f"E,CUE,{self.trial},{self.ms()}")
+                if now >= self.until:
+                    dwell, read = now - self.t_in, self.temp
+                    flags = []
+                    if self.start - self.ROOM > 1.5:
+                        flags.append("NOT_RESET")
+                    if dwell > self.target + 0.5:
+                        flags.append("LATE")
+                    elif dwell < self.target - 0.5:
+                        flags.append("EARLY")
+                    theta = ta = tt = float("nan")
+                    if self.tw is None or self.tw <= self.start:
+                        flags.append("NO_TWATER")
+                    else:
+                        theta = (read - self.start) / (self.tw - self.start)
+                        if theta <= 0 or theta >= 0.995:
+                            flags.append("SETTLED")
+                        else:
+                            ta, tt = -self.target / math.log(1 - theta), -dwell / math.log(1 - theta)
+                    self.until = 0.0
+                    dip_watch.on_line(f"D,{self.trial},0,0,{dwell:.2f},{self.start:.2f},{read:.2f},"
+                                      f"{self.tw if self.tw is not None else 'nan'},{theta:.3f},{ta:.2f},{tt:.2f},{'|'.join(flags) or 'OK'}")
+            else:
+                self.temp += (self.ROOM - self.temp) * (1 - math.exp(-0.2 / 1.5))    # sped up so tests don't wait
+            dip_watch.on_line(f"C,{self.ms()},{self.temp + random.uniform(-0.1, 0.1):.2f}")
+
+
 # ---------------------------------------------------------------- websocket
 
 @app.websocket("/ws")
@@ -1541,7 +1830,9 @@ async def ws_endpoint(ws: WebSocket):
     clients.add(ws)
     await ws.send_text(json.dumps({"type": "settings", **settings}))
     await ws.send_text(json.dumps({"type": "action", "action": "switch_lab", "lab": DEFAULT_LAB}))
-    for lab_name in ("cooling", "motor", "calib"):          # a refreshed dashboard still shows the mistake that's open
+    if dip_link:
+        await ws.send_text(json.dumps({"type": "dip_state", "lab": "dip", **dip_watch.state()}))
+    for lab_name in ("cooling", "motor", "calib", "dip"):          # a refreshed dashboard still shows the mistake that's open
         if open_diag[lab_name]:
             await ws.send_text(json.dumps({**open_diag[lab_name], "fix": pending_fix[lab_name]} if pending_fix[lab_name]
                                           else {k: v for k, v in open_diag[lab_name].items() if k != "fix"}))
@@ -1649,12 +1940,15 @@ def lan_ip():
 
 
 def main():
-    global motor_link, calib_link, DEFAULT_LAB, ROOM_TEMP, STATION, NOTIFY_URL
+    global motor_link, calib_link, dip_link, DEFAULT_LAB, ROOM_TEMP, STATION, NOTIFY_URL
     ap = argparse.ArgumentParser()
     ap.add_argument("--motor-port", help="robot COM port, e.g. COM5 or /dev/ttyACM0")
     ap.add_argument("--cooling-port", help="cooling probe COM port, e.g. COM6")
     ap.add_argument("--calib-port", help="robot running minseg_balance.ino, for the calibration lab, e.g. COM17")
-    ap.add_argument("--lab", choices=["motor", "cooling", "calib"], help="lab the dashboard opens on")
+    ap.add_argument("--dip-port", help="Uno running kelvin_dip.ino, for the time constant lab, e.g. COM16")
+    ap.add_argument("--water-temp", type=float, help="hot water temperature in C for the time constant lab")
+    ap.add_argument("--dip-seconds", type=float, default=4.0, help="target dip time in seconds")
+    ap.add_argument("--lab", choices=["motor", "cooling", "calib", "dip"], help="lab the dashboard opens on")
     ap.add_argument("--fake", action="store_true", help="simulate both boards")
     ap.add_argument("--kp", type=float, default=settings["kp"])
     ap.add_argument("--ki", type=float, default=settings["ki"])
@@ -1670,8 +1964,14 @@ def main():
     settings.update(kp=args.kp, ki=args.ki, kd=args.kd)
     stepper.update(low=args.low, high=args.high, seconds=args.step_seconds)
 
+    dip_watch.target, dip_watch.water = args.dip_seconds, args.water_temp
     cooling = None
     if args.fake:
+        dip_link = FakeDip()
+        dip_watch.on_connect_fake = True
+        dip_link.write(f"T,{dip_watch.target:g}")
+        if dip_watch.water:
+            dip_link.write(f"W,{dip_watch.water:g}")
         motor_link, cooling, calib_link = FakeMotor(), FakeCooling(), FakeTilt()
         print("Fake boards running. Type 'bad' for a bad controller, 'brake' to press on the wheel,\n"
               "'out'/'in' to move the probe, 'hold 80' for a steady speed, 'ta <message>' to text as the TA.")
@@ -1698,7 +1998,9 @@ def main():
             calib_link = SerialLink(args.calib_port)
             import atexit
             atexit.register(lambda: calib_link.write("x"))     # Ctrl+C turns the robot's motor off
-    DEFAULT_LAB = args.lab or ("calib" if args.calib_port else "motor")
+        if args.dip_port:
+            dip_link = SerialLink(args.dip_port, baud=9600, on_connect=dip_watch.on_connect, handler=dip_watch.on_line)
+    DEFAULT_LAB = args.lab or ("calib" if args.calib_port else "dip" if args.dip_port and not args.motor_port else "motor")
 
     def console():
         while True:
@@ -1717,6 +2019,14 @@ def main():
                     print(f"Holding it {calib_link.pitch:g} degrees forward/back, {calib_link.roll:g} sideways")
                 except ValueError:
                     print("Type pose <forward/back degrees> <sideways degrees>, e.g. pose 9 0")
+            elif cmd.split()[:1] == ["dip"] and isinstance(dip_link, FakeDip):
+                parts = cmd.split()
+                dip_link.dip(float(parts[1]) if len(parts) > 1 else dip_link.target)
+            elif cmd == "soak" and isinstance(dip_link, FakeDip):
+                dip_link.dip(15)
+            elif cmd[:2].upper() in ("W,", "T,", "B,", "O,") or cmd.upper() in ("R", "N"):
+                if dip_link:
+                    dip_link.write(cmd.upper())
             elif cmd == "shake" and isinstance(calib_link, FakeTilt):
                 calib_link.shake = not calib_link.shake
                 print("Shaky hands ON" if calib_link.shake else "Steady hands")

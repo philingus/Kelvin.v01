@@ -204,9 +204,10 @@
   <header>
     <div class="brand"><h1>Kelvin</h1><div class="sub">your lab partner, catching mistakes as they happen</div></div>
     <div class="tabs" role="tablist">
-      <button class="tab" data-lab="calib" role="tab">Calibration lab</button>
-      <button class="tab on" data-lab="motor" role="tab">Motor control lab</button>
-      <button class="tab" data-lab="cooling" role="tab">Cooling lab</button>
+      <button class="tab" data-lab="calib" role="tab">Calibration</button>
+      <button class="tab on" data-lab="motor" role="tab">Motor control</button>
+      <button class="tab" data-lab="cooling" role="tab">Cooling</button>
+      <button class="tab" data-lab="dip" role="tab">Time constant</button>
     </div>
     <div class="spacer"></div>
     <button type="button" class="camBtn" id="cameraBtn" title="Show the lab camera next to the readings">📷 Camera</button>
@@ -296,7 +297,7 @@
 <script>
 // ------------------------------------------------------------ config
 const WS_URL = "ws://localhost:8000/ws";
-const WINDOW_S = { motor: 10, cooling: 120, calib: 15 };
+const WINDOW_S = { motor: 10, cooling: 120, calib: 15, dip: 30 };
 const CAL_OK = { pitch: 4, roll: 5 };                  // same limits as the backend
 const LABS = {
   motor: {
@@ -309,6 +310,11 @@ const LABS = {
     legend: ["Robot now", "Straight up"],
     stable: "Hold it straight up and say \"Kelvin, calibrate.\"",
   },
+  dip: {
+    explain: "<b>What you're looking at:</b> a student dips a thermometer probe into hot water for a set number of seconds to measure how fast the probe responds (its time constant). The blue line is the probe, the dashed line is the water.",
+    legend: ["Probe temperature", "Water temperature"],
+    stable: "Dip the probe for the target time. Kelvin times every dip.",
+  },
   cooling: {
     explain: "<b>What you're looking at:</b> a cup of hot water cooling down. Physics predicts the dashed curve. The blue line is the real thermometer reading.",
     legend: ["Measured temperature", "What physics predicts"],
@@ -320,13 +326,14 @@ const LABS = {
 const $ = id => document.getElementById(id);
 let lab = "motor", live = false, wasLive = false, ws = null;
 let settings = { kp: 1.2, ki: 0.4, kd: 0.05 };
-let latest = { motor: {}, cooling: {}, calib: {} };
-const series = { motor: [], cooling: [], calib: [] };
-const marks = { motor: [], cooling: [], calib: [] };            // chart annotations {t, text}
-const state = { motor: "stable", cooling: "stable", calib: "stable" }; // stable | mistake | fixing | fixed
-const message = { motor: "", cooling: "", calib: "" };
-const fixes = { motor: null, cooling: null, calib: null };
-const lastIssue = { motor: "", cooling: "", calib: "" };         // what the latest open mistake was, e.g. "drag"
+let latest = { motor: {}, cooling: {}, calib: {}, dip: {} };
+const series = { motor: [], cooling: [], calib: [], dip: [] };
+const marks = { motor: [], cooling: [], calib: [], dip: [] };            // chart annotations {t, text}
+const state = { motor: "stable", cooling: "stable", calib: "stable", dip: "stable" }; // stable | mistake | fixing | fixed
+const message = { motor: "", cooling: "", calib: "", dip: "" };
+const fixes = { motor: null, cooling: null, calib: null, dip: null };
+let dipState = { cue: false, target: 4, water: null, room: null, in_water: false, last: null };
+const lastIssue = { motor: "", cooling: "", calib: "", dip: "" };         // what the latest open mistake was, e.g. "drag"
 const log = [];                                       // {lab, time, what, fix, result}
 let fixedTimer = null;
 
@@ -338,6 +345,18 @@ function handle(msg) {
   if (msg.type === "fix_update") { fixes[msg.lab || "motor"] = msg.fix; return render(); }
   if (msg.type === "undone") return markUndone();
   if (msg.type === "action" && msg.action === "switch_lab") return switchLab(LABS[msg.lab] ? msg.lab : "motor");
+  if (msg.type === "dip_state") { dipState = msg; return render(); }
+  if (msg.type === "dip_event") {
+    dipState.in_water = msg.event !== "out";
+    marks.dip.push({ t: nowT("dip"), text: msg.event === "cue" ? "beep!" : "in", good: true });
+    return;
+  }
+  if (msg.type === "dip_cue") {
+    state.dip = "fixing"; asked.dip = ""; fixes.dip = null;
+    const open = [...log].reverse().find(e => e.lab === "dip" && e.result === "open");
+    if (open) { open.result = "applied"; open.fix = "Timing cue turned on"; }
+    return render();
+  }
   if (msg.type === "calibrating") {
     state.calib = "fixing"; asked.calib = ""; message.calib = "Calibrating. Hold it straight up and still for four seconds.";
     const open = [...log].reverse().find(e => e.lab === "calib" && e.result === "open");
@@ -354,6 +373,7 @@ function handle(msg) {
   if (msg.type === "settings") { settings = { kp: +msg.kp, ki: +msg.ki, kd: +msg.kd }; return render(); }
   if (msg.lab === "motor") { latest.motor = msg; push("motor", { t: msg.t / 1000, a: msg.speed, b: msg.target }); }
   else if (msg.lab === "cooling") { latest.cooling = msg; push("cooling", { t: msg.t / 1000, a: msg.temp, b: msg.expected }); }
+  else if (msg.lab === "dip") { latest.dip = msg; push("dip", { t: msg.t / 1000, a: msg.temp, b: msg.water === null ? undefined : msg.water }); }
   else if (msg.lab === "calib") { latest.calib = msg; push("calib", { t: msg.t / 1000, a: msg.pitch, b: msg.roll }); }
 }
 function push(which, p) {
@@ -377,7 +397,7 @@ function onDiagnosis(d) {
     state[L] = "fixed";
     const open = [...log].reverse().find(e => e.lab === L && (e.result === "open" || e.result === "applied"));
     if (open) open.result = "fixed";
-    marks[L].push({ t: nowT(L), text: "fixed!", good: true });
+    marks[L].push({ t: nowT(L), text: L === "dip" ? "out ✓" : "fixed!", good: true });
     clearTimeout(fixedTimer);
     fixedTimer = setTimeout(() => { if (state[L] === "fixed") { state[L] = "stable"; render(); } }, 9000);
     fixes[L] = null;
@@ -388,15 +408,17 @@ function onDiagnosis(d) {
     state[L] = "mistake";
     lastIssue[L] = d.issue || "";
     fixes[L] = d.fix || null;
-    log.push({ lab: L, time: clock(), what: shortWhat(d), fix: d.fix ? fixText(d.fix) : handFix(d), result: "open", photo: camSnap() });
+    log.push({ lab: L, time: clock(), what: shortWhat(d), fix: L === "dip" && d.fix ? "Turn on the timing cue" : d.fix ? fixText(d.fix) : handFix(d), result: "open", photo: camSnap() });
     marks[L].push({ t: nowT(L), text: shortMark(d), good: false });
   }
   speak(d.text);
   render();
 }
 function shortWhat(d) {
-  const m = (d.text || "").match(/\d+(\.\d+)? (percent|degrees)/);
-  const names = { overshoot: "Wheel overshot its target", overshoot_kp: "Wheel overshot its target", slow: "Wheel too slow to reach target", steady_error: "Wheel settled below target",
+  const m = d.lab === "dip" ? null : (d.text || "").match(/\d+(\.\d+)? (percent|degrees)/);
+  if (d.lab === "dip" && dipState.last && /late|early|timing/.test(d.issue || ""))
+    return "Dip lasted " + (+dipState.last.dwell).toFixed(1) + " s, target " + dipState.target + " s";
+  const names = { dip_not_reset: "Probe hadn't cooled back down", dip_need_water: "Water temperature not known yet", overshoot: "Wheel overshot its target", overshoot_kp: "Wheel overshot its target", slow: "Wheel too slow to reach target", steady_error: "Wheel settled below target",
                   saturated: "Motor maxed out", jitter: "Motor power jittering", probe_out: "Reading dropped off the curve", not_fixed: "Still overshooting",
                   drag: "Something dragging on the wheel", drag_load: "Something loading the wheel", probe_fast: "Reading fell too fast for cooling water",
                   probe_high: "Reading rose above the curve", cal_tilted: "Calibrated while leaning", cal_sideways: "Calibrated while tipped sideways",
@@ -410,11 +432,15 @@ function shortMark(d) {
   if (d.issue === "probe_high") return "too warm?";
   if (d.issue === "overshoot" || d.issue === "overshoot_kp" || d.issue === "not_fixed") return "overshot " + (m ? m[1] + "%" : "");
   if (d.issue === "drag_load") return "load!";
+  if (/^dip_(late|early|timing)$/.test(d.issue || "")) return dipState.last ? "out at " + (+dipState.last.dwell).toFixed(1) + " s" : "wrong time";
+  if (d.issue === "dip_not_reset") return "still warm";
   if (d.issue === "drag") return "drag! " + (m ? "-" + m[1] + "%" : "");
   return "look here";
 }
 const HAND = { probe_out: "Put the probe back in the water", probe_fast: "Put the probe back in the water",
                probe_high: "Check what's touching the probe",
+               dip_late: "Pull the probe out at the target time", dip_early: "Leave the probe in until the target time", dip_timing: "Match the target time",
+               dip_not_reset: "Dry the probe and let it cool to room temperature", dip_need_water: "Hold the probe in the water for 15 seconds",
                cal_tilted: "Hold it straight up, then say \"calibrate\"", cal_sideways: "Stand it straight up, then say \"calibrate\"",
                cal_moved: "Hold it still for four seconds, then say \"calibrate\"", cal_rejected_tilt: "Stand it straight up, then say \"calibrate\"",
                cal_sensor: "Hold it still, then say \"calibrate\"", drag: "Take whatever is touching the wheel off it", drag_load: "Take whatever is touching the wheel off it" };
@@ -476,7 +502,7 @@ function speak(text, followUp) {   // followUp: let the student answer without s
 
 
 // ------------------------------------------------------------ ask Kelvin
-const asked = { motor: "", cooling: "", calib: "" };
+const asked = { motor: "", cooling: "", calib: "", dip: "" };
 function onAnswer(a) {
   if (a.report_sent && $("rTAStatus")) $("rTAStatus").textContent = a.report_sent === "ok" ? "Sent to TA ✓" : "Not sent";
   asked[lab] = a.from === "ta" ? (a.question ? "Your TA texted: " + a.question : "Message from your TA") : "You asked: " + a.question;
@@ -655,18 +681,20 @@ function showReport(r) {
   const fixed = r.fixed !== undefined ? r.fixed : log.filter(e => e.result === "fixed").length;
   const mins = r.minutes || Math.max(1, Math.round((Date.now() - pageOpened) / 60000));
   const st = r.settings || settings;
-  $("rDate").textContent = new Date().toLocaleString([], { dateStyle: "full", timeStyle: "short" }) + " · " + ({ motor: "Motor control lab", cooling: "Cooling lab", calib: "Calibration lab" })[lab];
+  $("rDate").textContent = new Date().toLocaleString([], { dateStyle: "full", timeStyle: "short" }) + " · " + ({ motor: "Motor control lab", cooling: "Cooling lab", calib: "Calibration lab", dip: "Time constant lab" })[lab];
   $("rSummary").textContent = r.summary ||
     ("In " + mins + " minute" + (mins === 1 ? "" : "s") + ", Kelvin caught " + mistakes + " mistake" + (mistakes === 1 ? "" : "s") +
      " and confirmed " + fixed + " fix" + (fixed === 1 ? "" : "es") + ". The controller is now at kp " + (+st.kp).toFixed(2) + ".");
   $("rStats").innerHTML =
     "<div>Time<b>" + mins + " min</b></div><div>Mistakes caught<b>" + mistakes + "</b></div><div>Fixes that worked<b>" + fixed + "</b></div>" +
-    (lab === "calib"
+    (lab === "dip"
+      ? "<div>Time constant<b>" + (dipState.last && dipState.last.tau ? (+dipState.last.tau).toFixed(1) + " s" : "--") + "</b></div>"
+      : lab === "calib"
       ? "<div>Calibration<b>" + (latest.calib.calibrated && latest.calib.offset !== null && latest.calib.offset !== undefined ? Math.abs(latest.calib.offset).toFixed(1) + "° off" : "not done") + "</b></div>"
       : "<div>Settings now<b>kp " + (+st.kp).toFixed(2) + "</b></div>");
   try { $("rChart").src = $("chart").toDataURL("image/png"); } catch (e) {}
   const names = { open: "Needs a fix", applied: "Fix applied", fixed: "Fixed", partial: "Helped, not enough", undone: "Undone" };
-  $("rRows").innerHTML = log.length ? log.map(e => "<tr><td>" + e.time + "</td><td>" + ({ motor: "Motor", cooling: "Cooling", calib: "Calibration" })[e.lab] + "</td><td>" + e.what + (e.photo ? '<img class="shot" src="' + e.photo + '" alt="Camera photo of the mistake">' : "") +
+  $("rRows").innerHTML = log.length ? log.map(e => "<tr><td>" + e.time + "</td><td>" + ({ motor: "Motor", cooling: "Cooling", calib: "Calibration", dip: "Time constant" })[e.lab] + "</td><td>" + e.what + (e.photo ? '<img class="shot" src="' + e.photo + '" alt="Camera photo of the mistake">' : "") +
     "</td><td>" + e.fix + "</td><td>" + (names[e.result] || e.result) + "</td></tr>").join("") : '<tr><td colspan="5">No mistakes this session.</td></tr>';
   $("report").hidden = false;
   if (message[lab] === "Writing your report…") { message[lab] = ""; render(); }
@@ -677,7 +705,8 @@ function showReport(r) {
 // The backend answers with an "applied" message, and that updates the screen.
 const demoUndo = [];
 $("applyBtn").onclick = () => {
-  if (lab === "calib") { askKelvin("calibrate"); return; }      // the fix for a bad calibration is to calibrate again
+  if (lab === "calib") { askKelvin("calibrate"); return; }
+  if (lab === "dip") { askKelvin("turn on the timing cue"); return; }      // the fix for a bad calibration is to calibrate again
   const f = fixes.motor; if (!f) return;
   if (live && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "apply_fix", fix: f }));
   else demoApply(f);
@@ -712,7 +741,7 @@ function connect() {
   try { ws = new WebSocket(WS_URL); } catch (e) { return setTimeout(connect, 2000); }
   ws.onopen = () => {
     live = true; wasLive = true;
-    for (const k of ["motor", "cooling", "calib"]) { series[k].length = 0; marks[k].length = 0; state[k] = "stable"; message[k] = ""; fixes[k] = null; latest[k] = {}; }
+    for (const k of ["motor", "cooling", "calib", "dip"]) { series[k].length = 0; marks[k].length = 0; state[k] = "stable"; message[k] = ""; fixes[k] = null; latest[k] = {}; }
     log.length = 0; taMsgs.length = 0; taUnread = 0; render(); renderTa();
   };
   ws.onmessage = ev => { try { handle(JSON.parse(ev.data)); } catch (e) {} };
@@ -841,6 +870,9 @@ function render() {
   $("stamp").textContent = lab === "calib" && st === "fixing" ? "Calibrating" : lab === "calib" && st === "fixed" ? "Calibrated" : STAMPS[st];
   $("verdictText").textContent =
     st === "stable" ? L.stable :
+    st === "mistake" && lab === "dip" ? "That dip won't give the right answer. Kelvin found the cause below." :
+    st === "fixing" && lab === "dip" ? "Timing cue is on. Kelvin is checking the next dip." :
+    st === "fixed" && lab === "dip" ? "Kelvin's fix worked. The dip was on time." :
     st === "mistake" && lab === "calib" ? "The calibration is off. Kelvin found the cause below." :
     st === "fixing" && lab === "calib" ? "Calibrating now. Hold it straight up and still." :
     st === "fixed" && lab === "calib" ? "Calibrated. The robot knows which way is straight up." :
@@ -855,7 +887,12 @@ function render() {
   $("said").textContent = message[lab] || "Watching the experiment. I'll speak up the moment something looks wrong.";
 
   const f = fixes[lab];
-  $("applyBtn").textContent = lab === "calib" ? "Calibrate again" : "Apply fix";
+  $("applyBtn").textContent = lab === "calib" ? "Calibrate again" : lab === "dip" ? "Turn on timing cue" : "Apply fix";
+  if (lab === "dip") {
+    $("rxBody").innerHTML = '<div class="empty">' + (fixes.dip ? "Beep and blink at " + dipState.target + " seconds, so you pull out on time." :
+      st === "mistake" ? handFix({ issue: lastIssue.dip }) + "." : "Nothing to fix right now.") + "</div>";
+    $("applyBtn").disabled = !(live && fixes.dip);
+  } else
   if (lab === "calib") {
     $("rxBody").innerHTML = '<div class="empty">' + (st === "mistake" ? handFix({ issue: lastIssue.calib }) + "." : "Nothing to fix right now.") + "</div>";
     $("applyBtn").disabled = !(live && st === "mistake");
@@ -867,7 +904,7 @@ function render() {
     $("rxBody").innerHTML = '<div class="empty">' + (st === "mistake" ? handFix({ issue: lastIssue[lab] }) + "." : "Nothing to fix right now.") + "</div>";
     $("applyBtn").disabled = true;
   }
-  $("settingsLine").textContent = lab === "calib" ? (latest.calib.calibrated ? "calibrated" : "not calibrated yet") : lab === "motor" ? "now: kp " + (+settings.kp).toFixed(2) + " · ki " + (+settings.ki).toFixed(2) + " · kd " + (+settings.kd).toFixed(2) : "";
+  $("settingsLine").textContent = lab === "dip" ? "target " + dipState.target + " s · cue " + (dipState.cue ? "on" : "off") : lab === "calib" ? (latest.calib.calibrated ? "calibrated" : "not calibrated yet") : lab === "motor" ? "now: kp " + (+settings.kp).toFixed(2) + " · ki " + (+settings.ki).toFixed(2) + " · kd " + (+settings.kd).toFixed(2) : "";
 
   const rows = log.filter(e => e.lab === lab).slice().reverse();
   const label = { open: ["open", "Needs a fix"], applied: ["applied", "Fix applied"], fixed: ["fixed", "Fixed ✓"], partial: ["partial", "Helped, not enough"], undone: ["undone", "Undone"] };
@@ -886,7 +923,7 @@ function render() {
   $("dot").className = "dot" + (live ? " live" : "");
   $("connText").textContent = live ? "live from the lab bench" : wasLive ? "backend stopped, reconnecting..." : "demo data (no backend)";
   $("demoRow").style.display = live ? "none" : "flex";
-  $("demoRow").style.display = live || lab === "calib" ? "none" : "flex";
+  $("demoRow").style.display = live || lab === "calib" || lab === "dip" ? "none" : "flex";
   $("demoBtn").textContent = lab === "motor" ? "Demo: load a bad controller" : (sim.probeOut ? "Demo: put the probe back" : "Demo: pull the probe out");
 }
 
@@ -894,7 +931,14 @@ function readingsHTML() {
   const m = latest.motor, c = latest.cooling;
   const n = (v, d) => (v === undefined || v === null || isNaN(v)) ? "--" : Number(v).toFixed(d);
   let items;
-  if (lab === "calib") {
+  if (lab === "dip") {
+    const k = latest.dip, d = dipState.last, off = d ? Math.abs(d.dwell - dipState.target) : null;
+    items = [
+      ["Probe", n(k.temp, 1), "°C", dipState.in_water ? "in the water" : dipState.water ? "water is " + dipState.water + " °C" : "water temperature not set yet"],
+      ["Last dip", d ? n(d.dwell, 1) : "--", d ? " s" : "", d ? (off <= 0.5 ? "on time (target " + dipState.target + " s)" : (d.dwell > dipState.target ? "too long" : "too short") + " (target " + dipState.target + " s)") : "target " + dipState.target + " s"],
+      ["Time constant", d && d.tau ? n(d.tau, 1) : "--", d && d.tau ? " s" : "", d && d.tau_assumed && off > 0.5 ? "the handout formula would say " + n(d.tau_assumed, 1) + " s" : "how fast the probe responds"],
+    ];
+  } else if (lab === "calib") {
     const k = latest.calib, cal = k.calibrated && k.offset !== null && k.offset !== undefined;
     items = [
       ["Forward / back", n(k.pitch, 1), "°", k.pitch === undefined ? "waiting for the robot" : Math.abs(k.pitch) <= CAL_OK.pitch ? "straight enough" : (k.pitch > 0 ? "leaning toward the batteries" : "leaning away from the batteries")],
@@ -979,7 +1023,7 @@ function draw() {
   const x = cv.getContext("2d"); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h);
   if (lab === "calib") return drawTilt(x, w, h);
   const s = series[lab], L = 44, R = w - 12, T = 30, B = h - 24;
-  let lo = lab === "motor" ? 0 : 15, hi = lab === "motor" ? 140 : 85;
+  let lo = lab === "motor" ? 0 : 15, hi = lab === "motor" ? 140 : lab === "dip" ? 65 : 85;
   for (const p of s) { if (p.a > hi) hi = p.a; if (p.a < lo) lo = p.a; }
   hi = Math.ceil(hi / 10) * 10; lo = Math.floor(lo / 10) * 10;
   const tEnd = s.length ? s[s.length - 1].t : 0, tStart = tEnd - WINDOW_S[lab];
@@ -991,7 +1035,7 @@ function draw() {
     x.textAlign = "right"; x.fillText(Math.round(v), L - 8, y + 4);
   }
   x.textAlign = "center"; x.font = "15px Caveat, 'Segoe Print', cursive"; x.fillStyle = "#8a8471";
-  x.fillText(lab === "motor" ? "last 10 seconds" : "last 2 minutes", (L + R) / 2, h - 6);
+  x.fillText(lab === "motor" ? "last 10 seconds" : lab === "dip" ? "last 30 seconds" : "last 2 minutes", (L + R) / 2, h - 6);
   const line = (key, color, width, dash) => {
     x.beginPath(); x.setLineDash(dash || []); x.strokeStyle = color; x.lineWidth = width; x.lineJoin = "round"; x.lineCap = "round";
     let started = false;

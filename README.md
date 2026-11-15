@@ -23,6 +23,16 @@ python server.py --calib-port COM17
 
 Simulator: `python server.py --fake --lab calib`, then type `pose 9 0` (lean), `pose 0 12` (sideways), `pose 0 0` (straight), `shake`.
 
+## Time constant lab
+
+The Uno runs `firmware/dip/kelvin_dip/kelvin_dip.ino` (9600 baud). The student dips a room-temperature probe into hot water for a set time and computes the probe's time constant from one reading. The board times every dip. Kelvin catches a dip that ran long or short, says what that does to the answer, and can turn on a beep at the target time. It then checks the next dip.
+
+```
+python server.py --dip-port COM16 --water-temp 58
+```
+
+Leave out `--water-temp` and hold the probe in the water for 15 seconds instead: Kelvin uses that reading. Voice: "fix it" (turns the cue on), "turn the cue off", "the water is 58 degrees", "set the dip time to 5 seconds". Dips are logged to `backend/logs/dip_*.csv`. Simulator: `python server.py --fake --lab dip`, then type `soak`, `dip 6.5`, `dip`.
+
 ## The problem
 
 In an intro engineering lab, one TA covers a room of students. When a student's controller overshoots or a sensor reading goes wrong, they stare at a graph, guess at numbers, and wait for the TA. Kelvin gives every bench a partner that knows what the graph means.
