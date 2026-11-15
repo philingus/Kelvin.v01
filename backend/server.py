@@ -67,6 +67,8 @@ app = FastAPI(lifespan=lifespan)
 clients: set = set()
 loop: asyncio.AbstractEventLoop | None = None
 motor_link = None          # object with .write(str) for sending commands to the robot
+calib_link = None          # the robot running minseg_balance.ino (calibration lab)
+DEFAULT_LAB = "motor"      # the lab the dashboard opens on
 settings = {"kp": 4.0, "ki": 10.0, "kd": 0.0}     # good settings for our MinSeg; --kp/--ki override
 
 
@@ -121,8 +123,29 @@ TEMPLATES = {
                  "That's a physical problem, not your settings, so don't change the gains. "
                  "Check for anything touching the wheel.",
     "drag_gone": "The drag is gone and the wheel is back on target. Your settings were fine the whole time.",
+    # calibration lab (tilt sensor on the MinSeg, robot held in the student's hands)
+    "cal_tilted": "You calibrated it {pitch} degrees {pdir}, not straight up. The board only rejects past 15 degrees, "
+                  "so it accepted this, and now it thinks that lean is upright. It would balance crooked. "
+                  "Hold it straight up and say calibrate again.",
+    "cal_sideways": "You calibrated it tipped {roll} degrees on its side. The board never checks sideways tilt, "
+                    "so it accepted this. Stand it straight up and say calibrate again.",
+    "cal_moved": "The board threw that calibration out because the robot moved while I was measuring: {how}. "
+                 "Hold it still for four seconds, elbows on the table helps, and say calibrate again.",
+    "cal_rejected_tilt": "The board threw that calibration out: it was {pitch} degrees {pdir}, too far from straight up. "
+                         "Stand it straight and say calibrate again.",
+    "cal_sensor": "The board threw that calibration out: the tilt sensor felt {g} times gravity instead of 1, "
+                  "so it was bumped or swinging. Hold it still and say calibrate again.",
+    "cal_ok": "Calibration is good. It's within {pitch} degrees of straight up and {roll} sideways, and it held still. "
+              "Say arm when you want to test the wheels.",
+    "cal_fixed": "That worked. You were {before} degrees off before, and now you're within {after}. "
+                 "The robot knows which way is up. Say arm to test the wheels.",
+    "wheels_ok": "The wheels push toward the lean, the way they should: when it tips, they drive under it to catch it. "
+                 "Say stop when you're done.",
 }
-OK_ISSUES = ("fixed", "fixed_gap", "fixed_reach", "fixed_sat", "probe_back", "drag_gone")      # these turn the dashboard green
+OK_ISSUES = ("fixed", "fixed_gap", "fixed_reach", "fixed_sat", "probe_back", "drag_gone",
+             "cal_ok", "cal_fixed", "wheels_ok")      # these turn the dashboard green
+NOT_A_FIX = ("drag_gone", "cal_ok", "wheels_ok")       # good news, but not a fix of an earlier mistake
+CAL_ISSUES = ("cal_tilted", "cal_sideways", "cal_moved", "cal_rejected_tilt", "cal_sensor", "cal_ok", "cal_fixed", "wheels_ok")
 
 
 # Gemini models to try, newest first. gemini-2.5-flash was shut down Oct 16, 2026.
@@ -220,7 +243,7 @@ def ai_rewrite(issue: str, facts: dict, fallback: str) -> str:
 
 
 # what Kelvin knows right now, used to answer questions
-recent = {"motor": None, "cooling": None, "events": []}
+recent = {"motor": None, "cooling": None, "calib": None, "events": []}
 
 
 session = {"started": time.time(), "events": [], "mistakes": 0, "fixed": 0, "applied": 0}
@@ -307,8 +330,8 @@ def stuck_watchdog():
 
 SAFE = {"kp": (0.01, 20.0), "ki": (0.0, 60.0), "kd": (0.0, 5.0)}      # Kelvin applies these on its own
 HARD = {"kp": (0.001, 60.0), "ki": (0.0, 200.0), "kd": (0.0, 15.0)}    # past SAFE but inside HARD needs the TA's OK
-pending_fix = {"motor": None, "cooling": None}   # the suggested fix waiting for "apply"
-open_diag = {"motor": None, "cooling": None}     # the mistake on screen right now, resent when a dashboard (re)connects
+pending_fix = {"motor": None, "cooling": None, "calib": None}   # the suggested fix waiting for "apply"
+open_diag = {"motor": None, "cooling": None, "calib": None}     # the mistake on screen right now, resent when a dashboard (re)connects
 undo_stack = []                                  # earlier settings, newest last
 stepper = {"low": 30.0, "high": 80.0, "on": True, "seconds": 4.0}   # RPM; our wheel tops out ~130
 MEASURE_WORDS = r"\b(half|third|quarter|double|twice|times|percent|more|less|lower|higher|bigger|smaller|bit)\b"
@@ -380,6 +403,21 @@ def do_action(a: dict, lab: str, source: str = "student") -> str:
         apply_settings(vals, "applied with TA approval")
         send({"type": "answer", "question": "", "from": "ta", "text": f"Your TA approved it. {fmt_fix(vals)} is on the robot now."})
         return f"Approved. {fmt_fix(vals)} is on the robot at {STATION}. I'll tell you if it causes trouble."
+    if t == "calibrate" or (t == "apply_fix" and pending_fix["calib"] and (lab == "calib" or not pending_fix["motor"])):
+        if not calib_link:
+            return "The tilt sensor isn't connected, so I can't calibrate."
+        calib_link.write("c")
+        calib_watch.started()
+        remember_event("calib", "student asked Kelvin to calibrate")
+        return "Hold it straight up and still for four seconds. Calibrating now."
+    if t == "arm":
+        if not calib_link:
+            return "The tilt sensor isn't connected."
+        calib_link.write("a")
+        calib_watch.armed_at = time.time()
+        calib_watch.wheel_votes = 0
+        remember_event("calib", "student armed the motor")
+        return "Arming. Tilt it gently and watch the wheels. Say stop to turn the motor off."
     if t == "apply_fix":
         f = pending_fix["motor"]
         if not f:
@@ -413,9 +451,10 @@ def do_action(a: dict, lab: str, source: str = "student") -> str:
         send({"type": "undone", "lab": "motor"})
         return f"Undone. We're back to kp {settings['kp']:g}, ki {settings['ki']:g}, kd {settings['kd']:g}."
     if t == "switch_lab":
-        to = "cooling" if str(a.get("lab", "")).lower().startswith("cool") else "motor"
+        want = str(a.get("lab", "")).lower()
+        to = "cooling" if want.startswith("cool") else "calib" if want.startswith(("cal", "tilt", "bal")) else "motor"
         send({"type": "action", "action": "switch_lab", "lab": to})
-        return "Here's the cooling lab." if to == "cooling" else "Here's the motor lab."
+        return {"cooling": "Here's the cooling lab.", "calib": "Here's the calibration lab."}.get(to, "Here's the motor lab.")
     if t == "set_target":
         try:
             v = float(a.get("value"))
@@ -441,6 +480,8 @@ def do_action(a: dict, lab: str, source: str = "student") -> str:
         return f"Holding the wheel at a steady {v:g}. Say set the speed to step it up and down again."
     if t == "stop":
         stepper["on"] = False
+        if calib_link:
+            calib_link.write("x")
         if motor_link:
             motor_link.write("S,0")
         remember_event("motor", "student stopped the motor")
@@ -473,6 +514,14 @@ def quick_intent(q: str, lab: str = "", source: str = "student"):
             return {"type": "approve"}
         if re.search(r"^\W*(no|nope|deny|denied|block|don'?t|do not)\b", s):
             return {"type": "deny"}
+    question = re.search(r"^\W*(why|what|how|is|was|did|does|should|explain|tell me)\b", s)
+    if calib_link and not question:
+        if re.search(r"\b(re-?)?calibrat\w*\b", s):
+            return {"type": "calibrate"}
+        if re.search(r"\bdisarm\b", s):
+            return {"type": "stop"}
+        if re.search(r"\barm\b|\b(enable|turn on|start) (the )?(motors?|wheels?)\b", s):
+            return {"type": "arm"}
     if re.search(r"\b(undo|revert|put it back|change it back)\b|\bgo back\b(?!\s+to\b)", s):
         return {"type": "undo"}
     report_words = r"\b(show|give|make|create|generate|send|open|write|get|pull up|need|want|see|text|email|share|forward)\b.*\b(report|summary|recap)\b|\bsummari[sz]e\b"
@@ -495,9 +544,10 @@ def quick_intent(q: str, lab: str = "", source: str = "student"):
         base = waiting.get(key, settings[key])
         factor = {"third": 1 / 3, "half": 0.5, "quarter": 0.25, "double": 2, "twice": 2}[rel.group(1)]
         return {"type": "set_fix", key: round(base * factor, 3), "apply": bool(re.search(r"\bapply\b", s))}
-    m = re.search(r"\b(switch|go|change|move|show|open|take me)\b.*\b(cooling|cup|temperature|water|motor|wheel|robot)\b", s)
+    m = re.search(r"\b(switch|go|change|move|show|open|take me)\b.*\b(cooling|cup|temperature|water|motor|wheel|robot|calibration|tilt|balance)\b", s)
     if m and not measured:
-        to = "cooling" if m.group(2) in ("cooling", "cup", "temperature", "water") else "motor"
+        to = "cooling" if m.group(2) in ("cooling", "cup", "temperature", "water") else \
+             "calib" if m.group(2) in ("calibration", "tilt", "balance") else "motor"
         if to != lab:                     # already on that lab? then it's probably a question, let the AI answer
             return {"type": "switch_lab", "lab": to}
     if re.search(r"\b(apply|go ahead|send it|do it|use (it|that|the fix))\b", s) and not measured:
@@ -547,11 +597,19 @@ ACTION_WORDS = {
     "set_fix": r"\bk ?[pid]\b|gain|setting|third|half|quarter|double|twice|lower|raise|higher|less|more|reduce|increase|decrease|\d",
     "set_target": r"speed|target|rpm|\d",
     "hold": r"speed|hold|steady|keep|\d",
-    "switch_lab": r"switch|cooling|cup|temperature|motor|wheel|show|open|lab|go to",
+    "switch_lab": r"switch|cooling|cup|temperature|motor|wheel|show|open|lab|go to|calibrat|tilt",
+    "calibrate": r"calibrat|again|redo|retry|try|fix|apply|go ahead|do it|\byes\b",
+    "arm": r"\barm|enable|turn on|start|wheel|motor|test",
 }
 
 
 def status_line() -> str:
+    if DEFAULT_LAB == "calib":
+        c = calib_watch.last_cal
+        cal = (f"Last calibration {c['verdict']}, {abs(c['pitch']):.1f} degrees forward/back and {abs(c['roll']):.1f} sideways"
+               if c else "Not calibrated yet")
+        m, f = session["mistakes"], session["fixed"]
+        return f"{STATION}: {m} mistake{'' if m == 1 else 's'} caught, {f} fixed. {cal}."
     last = next((e for e in reversed(session["events"]) if "[chat]" not in e), "nothing has gone wrong yet")
     last = re.sub(r"^\d\d:\d\d:\d\d \[\w+\] ", "", last)
     m, f = session["mistakes"], session["fixed"]
@@ -565,7 +623,7 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
     question = question.strip()[:300]
     if not question:
         return ""
-    lab = lab or "motor"
+    lab = lab or DEFAULT_LAB
     action = quick_intent(question, lab, source)
     say = None
     if not action:
@@ -580,6 +638,7 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
                             if stepper["on"] else "motor stopped",
             "motor_latest": recent["motor"],
             "cooling_latest": recent["cooling"],
+            "calibration_latest": recent["calib"],
             "minutes_into_session": round((time.time() - session["started"]) / 60, 1),
             "mistakes_caught": session["mistakes"], "fixes_that_worked": session["fixed"],
             "session_log": (session["events"][-30:] if source == "ta" else recent["events"]) or ["nothing wrong yet"],
@@ -588,7 +647,10 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
             "You are Kelvin, a friendly lab partner watching a student's experiment through live sensor data. "
             "Labs: 'motor' is a robot wheel whose speed is held at a target by the student's controller "
             "(settings kp, ki, kd). 'cooling' is a cup of hot water with a temperature probe; 'expected' is what "
-            "Newton's law of cooling predicts. The session_log is everything that happened, including what the "
+            "Newton's law of cooling predicts. 'calib' is the calibration lab: the student holds a balancing robot "
+            "and calibrates its tilt sensor so it learns which way is straight up; pitch is forward/back tilt from "
+            "gravity (positive = toward the batteries), roll is sideways tilt; a good calibration is within 4 degrees "
+            "forward/back and 5 sideways and held still. The session_log is everything that happened, including what the "
             "student said to you out loud and what the TA texted.\n"
             f"You are talking to {who}.\n"
             "Decide whether they want you to DO something. You can take at most one of these actions:\n"
@@ -598,7 +660,9 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
             "are relative to the suggested fix waiting if there is one, otherwise to the settings on the robot; "
             "work out the actual number. Set apply to true only if they also asked to apply or send it now.\n"
             '- {"type":"undo"}: go back to the previous settings.\n'
-            '- {"type":"switch_lab","lab":"motor" or "cooling"}: show the other lab on the bench screen.\n'
+            '- {"type":"switch_lab","lab":"motor", "cooling" or "calib"}: show another lab on the bench screen.\n'
+            '- {"type":"calibrate"}: calibrate the tilt sensor (the student must hold the robot straight and still).\n'
+            '- {"type":"arm"}: turn on the balancing motor so the wheels react to tilt.\n'
             '- {"type":"set_target","value":number}: make the wheel step up and down to this speed.\n'
             '- {"type":"hold","value":number}: hold the wheel at one steady speed.\n'
             '- {"type":"stop"} or {"type":"start"}: stop or restart the motor.\n'
@@ -704,9 +768,11 @@ def diagnose(lab: str, issue: str, facts: dict, fix: dict | None = None):
     text = TEMPLATES[issue].format(**facts)
     good = issue in OK_ISSUES
     if good:
-        if issue != "drag_gone":                       # drag was physical, so any gain fix still stands
+        if issue not in NOT_A_FIX:                     # drag was physical, so any gain fix still stands
             pending_fix[lab] = None
             session["fixed"] += 1
+        elif lab == "calib":
+            pending_fix[lab] = None
         if ta["open_since"] and (issue != "drag_gone" or ta["open_issue"] in ("drag", "drag_load")):
             if ta["stuck_sent"]:
                 notify("resolved", f"{STATION} is back on track. {text}")
@@ -725,7 +791,8 @@ def diagnose(lab: str, issue: str, facts: dict, fix: dict | None = None):
                                 f"overshooting by {facts.get('after')} percent. They may need you.")
 
     def worker():
-        final = ai_rewrite(issue, facts, text) if not good else text
+        # calibration lines are short and exact, so they're spoken as written, with no wait for the AI
+        final = ai_rewrite(issue, facts, text) if not good and issue not in CAL_ISSUES else text
         msg = {"type": "diagnosis", "lab": lab, "issue": "ok" if good else issue, "text": final}
         if fix:
             msg["fix"] = fix
@@ -1119,6 +1186,141 @@ def on_cooling_line(parts):
     recent["cooling"] = {"temp_c": temp, "expected_c": msg.get("expected"), "seconds": round(t / 1000)}
 
 
+# ---------------------------------------------------------------- calibration lab
+
+CAL_PITCH_OK = 4.0     # degrees forward/back from straight up that still counts as a good calibration
+CAL_ROLL_OK = 5.0      # degrees sideways
+CAL_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", time.strftime("calib_%m%d_%H%M%S.csv"))
+
+
+class CalibWatcher:
+    """The robot runs minseg_balance.ino. It streams its tilt (B lines) and reports every calibration (CAL lines).
+    The board's own check only rejects a calibration past 15 degrees forward/back and never looks sideways,
+    so Kelvin judges every calibration again with tighter limits and says what to do."""
+
+    def __init__(self):
+        self.last_cal = None          # the latest calibration and Kelvin's verdict
+        self.bad_before = None        # how far off the last bad calibration was, for "that worked"
+        self.calibrating_since = 0.0
+        self.armed_at = 0.0
+        self.wheel_votes = 0          # samples where the wheels pushed toward the lean, since arming
+        self.wheel_said = False
+        self.armed = False
+        self.coached = False          # said "that's straight now" once after a bad calibration
+        self.straight_since = 0.0
+
+    def started(self):
+        self.calibrating_since = time.time()
+        self.coached = True           # no coaching while it's calibrating
+        send({"type": "calibrating", "lab": "calib"})
+
+    def on_status(self, parts):
+        # B,time_ms,pitch,roll,angle,rate,pwm,armed,wheel_dps,calibrated
+        try:
+            t = float(parts[1])
+            pitch, roll, angle, rate = (float(x) for x in parts[2:6])
+            pwm, armed, wheel, cal = float(parts[6]), parts[7].strip() == "1", float(parts[8]), parts[9].strip() == "1"
+        except (ValueError, IndexError):
+            return
+        if armed and not self.armed:
+            self.wheel_votes, self.wheel_said = 0, False
+        self.armed = armed
+        offset = self.last_cal["pitch"] if (cal and self.last_cal) else None
+        send({"lab": "calib", "t": t, "pitch": pitch, "roll": roll, "angle": angle, "rate": rate, "pwm": pwm,
+              "armed": armed, "wheel": wheel, "calibrated": cal, "offset": offset})
+        recent["calib"] = {"forward_back_tilt_deg": pitch, "sideways_tilt_deg": roll, "calibrated": cal,
+                           "motor_armed": armed, "last_calibration": self.last_cal}
+
+        # Armed and tilted: do the wheels drive toward the lean? (positive wheel speed = the way a positive
+        # motor command drives, and the firmware drives toward the lean, so the signs should match)
+        if armed and not self.wheel_said and abs(angle) > 3 and abs(wheel) > 40:
+            if (wheel > 0) == (angle > 0):
+                self.wheel_votes += 1
+                if self.wheel_votes >= 8:
+                    self.wheel_said = True
+                    diagnose("calib", "wheels_ok", {})
+            else:
+                print(f"[calib] wheels look like they push AWAY from the lean (angle {angle:+.1f}, wheel {wheel:+.0f} deg/s). "
+                      "If the real wheels drive toward the lean, the encoder sign in this check is flipped.")
+
+        # After a bad calibration, say once when the robot is finally held straight.
+        if not self.coached and not armed and abs(pitch) <= CAL_PITCH_OK - 1 and abs(roll) <= CAL_ROLL_OK - 1:
+            if not self.straight_since:
+                self.straight_since = time.time()
+            elif time.time() - self.straight_since > 1.2:
+                self.coached = True
+                text = f"That's straight now, {abs(pitch):.0f} degrees forward and {abs(roll):.0f} sideways. Say calibrate."
+                send({"type": "answer", "question": "", "text": text})
+        else:
+            self.straight_since = 0.0
+
+    def on_cal(self, parts):
+        # CAL,result,mean_pitch,mean_roll,pitch_spread,gyro_spread,gravity
+        try:
+            result = parts[1].strip()
+            pitch, roll, spread, gyro, g = (float(x) for x in parts[2:7])
+        except (ValueError, IndexError):
+            return
+        pdir = "toward the batteries" if pitch > 0 else "away from the batteries"
+        facts = {"pitch": f"{abs(pitch):.1f}", "roll": f"{abs(roll):.1f}", "pdir": pdir, "g": f"{g:.2f}"}
+        off = max(abs(pitch), abs(roll))
+        if result != "ok":
+            if g < 0.85 or g > 1.15:
+                issue = "cal_sensor"
+            elif spread > 1.0 or gyro > 2.0:
+                issue = "cal_moved"
+                facts["how"] = (f"the angle wobbled {spread:.1f} degrees" if spread > 1.0
+                                else f"it was turning at {gyro:.1f} degrees a second")
+            else:
+                issue = "cal_rejected_tilt"
+        elif abs(roll) > CAL_ROLL_OK and abs(roll) - CAL_ROLL_OK >= abs(pitch) - CAL_PITCH_OK:
+            issue = "cal_sideways"
+        elif abs(pitch) > CAL_PITCH_OK:
+            issue = "cal_tilted"
+        elif self.bad_before is not None:
+            issue = "cal_fixed"
+            facts.update(before=f"{self.bad_before:.0f}", after=f"{off:.1f}")
+        else:
+            issue = "cal_ok"
+        good = issue in OK_ISSUES
+        self.last_cal = {"result": result, "pitch": pitch, "roll": roll, "spread": spread, "gyro_spread": gyro,
+                         "gravity": g, "verdict": "good" if good else "off"}
+        if good:
+            self.bad_before = None
+        else:
+            self.bad_before = max(off, self.bad_before or 0)
+            self.coached = False
+            self.straight_since = 0.0
+            pending_fix["calib"] = {"recalibrate": 1}
+        print(f"[calib] board said {result}: pitch {pitch:+.1f}, roll {roll:+.1f}, spread {spread:.2f}, "
+              f"gyro {gyro:.2f}, gravity {g:.3f} -> {issue}")
+        try:
+            new = not os.path.exists(CAL_LOG)
+            os.makedirs(os.path.dirname(CAL_LOG), exist_ok=True)
+            with open(CAL_LOG, "a") as f:
+                if new:
+                    f.write("time,board_result,pitch_deg,roll_deg,pitch_spread,gyro_spread,gravity,kelvin\n")
+                f.write(f"{time.strftime('%H:%M:%S')},{result},{pitch:.2f},{roll:.2f},{spread:.2f},{gyro:.2f},{g:.3f},{issue}\n")
+        except OSError:
+            pass
+        diagnose("calib", issue, facts)
+
+    def on_note(self, line):
+        """The board explains why it won't arm. Say it in plain words."""
+        if "Cannot arm" not in line:
+            return
+        if "calibrate first" in line:
+            text = "I can't arm it yet. It needs a calibration first, so say calibrate."
+        elif "fault" in line:
+            text = "The board has a fault. Press its reset button, then calibrate again."
+        else:
+            text = "I can't arm it while it's tilted or moving. Hold it straight and still, then say arm again."
+        send({"type": "answer", "question": "", "text": text})
+
+
+calib_watch = CalibWatcher()
+
+
 # ---------------------------------------------------------------- line routing
 
 def on_line(line: str):
@@ -1126,12 +1328,17 @@ def on_line(line: str):
     if not line or line.startswith("#"):
         if line:
             print("[board]", line)
+            calib_watch.on_note(line)
         return
     parts = line.split(",")
     if parts[0] == "T":
         on_motor_line(parts)
     elif parts[0] == "C":
         on_cooling_line(parts)
+    elif parts[0] == "B":
+        calib_watch.on_status(parts)
+    elif parts[0] == "CAL":
+        calib_watch.on_cal(parts)
 
 
 # ---------------------------------------------------------------- real boards
@@ -1265,6 +1472,67 @@ class FakeCooling:
             on_line(f"C,{int(t * 1000)},{cur + random.uniform(-0.15, 0.15):.2f}")
 
 
+class FakeTilt:
+    """Behaves like minseg_balance.ino held in someone's hands. Terminal: 'pose 9 0' holds it 9 degrees toward
+    the batteries, 'pose 0 12' tips it 12 degrees sideways, 'pose 0 0' is straight up, 'shake' toggles a wobbly hand."""
+
+    def __init__(self):
+        self.pitch, self.roll, self.shake = 9.0, 0.0, False
+        self.cal, self.offset, self.armed = False, 0.0, False
+        self.busy_until = 0.0
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def now_pose(self):
+        wob = 2.5 if self.shake else 0.25
+        return self.pitch + random.gauss(0, wob), self.roll + random.gauss(0, wob)
+
+    def write(self, text):
+        c = text.strip().lower()
+        if c == "c":
+            self.armed = False
+            threading.Thread(target=self.calibrate, daemon=True).start()
+        elif c == "a":
+            if not self.cal:
+                on_line("# Cannot arm: send c to calibrate first.")
+            elif abs(self.pitch - self.offset) > 4 or self.shake:
+                on_line("# Cannot arm: hold upright and still, retry a.")
+            else:
+                self.armed = True
+                on_line("# ARMED. x stops motors.")
+        elif c == "x":
+            self.armed = False
+            on_line("# STOPPED")
+
+    def calibrate(self):
+        on_line("# Hold UPRIGHT and STILL.")
+        self.busy_until = time.time() + 4
+        time.sleep(2)
+        ps, rs = [], []
+        for _ in range(40):
+            p, r = self.now_pose()
+            ps.append(p)
+            rs.append(r)
+            time.sleep(0.05)
+        mp, mr, sd = statistics.mean(ps), statistics.mean(rs), statistics.pstdev(ps)
+        gyro = 3.0 if self.shake else 0.4
+        rejected = abs(mp) > 15 or sd > 1.0 or gyro > 2.0
+        on_line(f"CAL,{'rejected' if rejected else 'ok'},{mp:.2f},{mr:.2f},{sd:.2f},{gyro:.2f},1.003")
+        if not rejected:
+            self.cal, self.offset = True, mp
+            on_line("# Calibration OK. Motors OFF.")
+
+    def run(self):
+        t0 = time.time()
+        while True:
+            time.sleep(0.05)
+            p, r = self.now_pose()
+            angle = (p - self.offset) if self.cal else 0.0
+            wheel = 12 * angle if self.armed and abs(angle) > 1 else 0.0
+            pwm = int(max(-180, min(180, 8 * angle))) if self.armed else 0
+            on_line(f"B,{int((time.time() - t0) * 1000)},{p:.1f},{r:.1f},{angle:.1f},0.0,{pwm},{1 if self.armed else 0},"
+                    f"{wheel:.0f},{1 if self.cal else 0}")
+
+
 # ---------------------------------------------------------------- websocket
 
 @app.websocket("/ws")
@@ -1272,7 +1540,8 @@ async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     clients.add(ws)
     await ws.send_text(json.dumps({"type": "settings", **settings}))
-    for lab_name in ("cooling", "motor"):          # a refreshed dashboard still shows the mistake that's open
+    await ws.send_text(json.dumps({"type": "action", "action": "switch_lab", "lab": DEFAULT_LAB}))
+    for lab_name in ("cooling", "motor", "calib"):          # a refreshed dashboard still shows the mistake that's open
         if open_diag[lab_name]:
             await ws.send_text(json.dumps({**open_diag[lab_name], "fix": pending_fix[lab_name]} if pending_fix[lab_name]
                                           else {k: v for k, v in open_diag[lab_name].items() if k != "fix"}))
@@ -1380,10 +1649,12 @@ def lan_ip():
 
 
 def main():
-    global motor_link, ROOM_TEMP, STATION, NOTIFY_URL
+    global motor_link, calib_link, DEFAULT_LAB, ROOM_TEMP, STATION, NOTIFY_URL
     ap = argparse.ArgumentParser()
     ap.add_argument("--motor-port", help="robot COM port, e.g. COM5 or /dev/ttyACM0")
     ap.add_argument("--cooling-port", help="cooling probe COM port, e.g. COM6")
+    ap.add_argument("--calib-port", help="robot running minseg_balance.ino, for the calibration lab, e.g. COM17")
+    ap.add_argument("--lab", choices=["motor", "cooling", "calib"], help="lab the dashboard opens on")
     ap.add_argument("--fake", action="store_true", help="simulate both boards")
     ap.add_argument("--kp", type=float, default=settings["kp"])
     ap.add_argument("--ki", type=float, default=settings["ki"])
@@ -1401,7 +1672,7 @@ def main():
 
     cooling = None
     if args.fake:
-        motor_link, cooling = FakeMotor(), FakeCooling()
+        motor_link, cooling, calib_link = FakeMotor(), FakeCooling(), FakeTilt()
         print("Fake boards running. Type 'bad' for a bad controller, 'brake' to press on the wheel,\n"
               "'out'/'in' to move the probe, 'hold 80' for a steady speed, 'ta <message>' to text as the TA.")
     else:
@@ -1423,6 +1694,11 @@ def main():
             atexit.register(stop_wheel)          # Ctrl+C stops the wheel instead of leaving it spinning
         if args.cooling_port:
             SerialLink(args.cooling_port)
+        if args.calib_port:
+            calib_link = SerialLink(args.calib_port)
+            import atexit
+            atexit.register(lambda: calib_link.write("x"))     # Ctrl+C turns the robot's motor off
+    DEFAULT_LAB = args.lab or ("calib" if args.calib_port else "motor")
 
     def console():
         while True:
@@ -1435,6 +1711,17 @@ def main():
                 print("Brake ON (type brake again to release)" if motor_link.brake else "Brake released")
             elif cmd.startswith("hold "):
                 print(do_action({"type": "hold", "value": cmd.split()[1]}, "motor"))
+            elif cmd.startswith("pose ") and isinstance(calib_link, FakeTilt):
+                try:
+                    calib_link.pitch, calib_link.roll = (float(v) for v in cmd.split()[1:3])
+                    print(f"Holding it {calib_link.pitch:g} degrees forward/back, {calib_link.roll:g} sideways")
+                except ValueError:
+                    print("Type pose <forward/back degrees> <sideways degrees>, e.g. pose 9 0")
+            elif cmd == "shake" and isinstance(calib_link, FakeTilt):
+                calib_link.shake = not calib_link.shake
+                print("Shaky hands ON" if calib_link.shake else "Steady hands")
+            elif cmd in ("c", "a", "x") and calib_link:
+                calib_link.write(cmd)
             elif cmd.startswith("ta "):
                 threading.Thread(target=lambda q=cmd[3:]: print("[reply to TA]", handle_voice(q, "", "ta")),
                                  daemon=True).start()

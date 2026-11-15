@@ -4,6 +4,25 @@ An AI lab partner that watches a student's experiment through live sensor data, 
 
 Built at HackPrinceton Fall 2026 by Phil, Monika, Gissell and Nirmit.
 
+
+## Calibration lab (main demo)
+
+The robot runs `firmware/minseg/minseg_balance/minseg_balance.ino` and is held in the student's hands. Before a balancing robot can balance, its tilt sensor has to learn which way is straight up. The board's own check only rejects a calibration past 15 degrees forward or back and never checks sideways, so Kelvin judges every calibration again:
+
+| Mistake | How Kelvin knows |
+|---|---|
+| Calibrated while leaning | Average forward/back tilt over 4 degrees |
+| Calibrated while tipped sideways | Average sideways tilt over 5 degrees |
+| Moved while calibrating | The board rejected it: the angle wobbled over 1 degree, or it was turning |
+
+Say "Kelvin, calibrate" to calibrate, "arm" to turn the motor on, "stop" to turn it off. After a bad calibration, "fix it" or the Calibrate again button recalibrates, and Kelvin reports how far off it was before and after. Every calibration is logged to `backend/logs/calib_*.csv`.
+
+```
+python server.py --calib-port COM17
+```
+
+Simulator: `python server.py --fake --lab calib`, then type `pose 9 0` (lean), `pose 0 12` (sideways), `pose 0 0` (straight), `shake`.
+
 ## The problem
 
 In an intro engineering lab, one TA covers a room of students. When a student's controller overshoots or a sensor reading goes wrong, they stare at a graph, guess at numbers, and wait for the TA. Kelvin gives every bench a partner that knows what the graph means.

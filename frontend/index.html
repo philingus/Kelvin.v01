@@ -70,8 +70,26 @@
   .legend { display: flex; gap: 20px; font-size: 13px; color: var(--ink-soft); padding: 10px 2px 0; }
   .key { display: inline-block; width: 24px; height: 0; border-top: 3px solid var(--blue); vertical-align: middle; margin-right: 6px; }
   .key.target { border-top: 2.5px dashed var(--pencil); }
-  .plot { flex: 1; min-height: 160px; position: relative; }
+  .plot { flex: 1; min-height: 160px; display: flex; gap: 14px; }
+  .plotc { flex: 1; min-width: 0; position: relative; }
   .plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* live camera beside the chart (camera capture by Gissell) */
+  .cam { flex: 0 0 36%; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
+  .cam[hidden] { display: none; }
+  .cam .camhead { display: flex; align-items: center; gap: 8px; font: 600 12px var(--mono); color: var(--ink-soft); text-transform: uppercase; letter-spacing: .06em; }
+  .cam .rec { width: 9px; height: 9px; border-radius: 50%; background: #c0392b; animation: recpulse 1.4s infinite; }
+  @keyframes recpulse { 50% { opacity: .25; } }
+  .cam select { margin-left: auto; max-width: 55%; font: 12px var(--sans); border: 1px solid var(--rule); border-radius: 6px; background: var(--card); color: var(--ink); padding: 2px 4px; }
+  .cam [hidden] { display: none !important; }
+  .cam .frame { width: 100%; aspect-ratio: 4 / 3; max-height: calc(100% - 26px); position: relative; border: 2.5px solid var(--ink); border-radius: 10px; overflow: hidden; background: #1b2233; }
+  .cam.bad .frame { border-color: #c0392b; box-shadow: 0 0 0 3px rgba(192,57,43,.18); }
+  .cam.good .frame { border-color: #2f7d4f; box-shadow: 0 0 0 3px rgba(47,125,79,.18); }
+  .cam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .cam .camnote { position: absolute; left: 0; right: 0; bottom: 0; padding: 6px 10px; font: 600 13px var(--sans); color: #fff; background: linear-gradient(transparent, rgba(0,0,0,.72)); }
+  .cam .camwait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 12px; font: 14px var(--sans); color: #cfd6e6; }
+  .camBtn { font: 600 12.5px var(--sans); background: transparent; border: 1.5px solid var(--ink); color: var(--ink); padding: 4px 11px; border-radius: 7px; margin-right: 12px; cursor: pointer; }
+  .camBtn.on, .camBtn:hover { background: var(--ink); color: var(--card); }
+  .log li img.shot, .rtable img.shot { display: block; margin-top: 5px; width: 132px; border-radius: 6px; border: 1.5px solid #c0392b; }
 
   .right { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
   .note { background: #fff8d8; border: 1.5px solid #e2cf7d; border-radius: 4px 12px 12px 12px; padding: 12px 16px; box-shadow: 3px 4px 0 rgba(29, 42, 68, .08); }
@@ -176,7 +194,7 @@
   }
   @media (max-width: 980px) {
     .app { height: auto; padding-left: 18px; } .app::before { display: none; }
-    .main { grid-template-columns: 1fr; } .plot { height: 280px; flex: none; }
+    .main { grid-template-columns: 1fr; } .plot { height: 420px; flex: none; flex-direction: column; } .cam { flex: 0 0 45%; }
     header { flex-wrap: wrap; } .verdict { grid-template-columns: 1fr; }
   }
 </style>
@@ -186,11 +204,12 @@
   <header>
     <div class="brand"><h1>Kelvin</h1><div class="sub">your lab partner, catching mistakes as they happen</div></div>
     <div class="tabs" role="tablist">
+      <button class="tab" data-lab="calib" role="tab">Calibration lab</button>
       <button class="tab on" data-lab="motor" role="tab">Motor control lab</button>
       <button class="tab" data-lab="cooling" role="tab">Cooling lab</button>
     </div>
     <div class="spacer"></div>
-    <button type="button" class="repBtn" id="cameraOpen">Camera</button>
+    <button type="button" class="camBtn" id="cameraBtn" title="Show the lab camera next to the readings">📷 Camera</button>
     <div class="conn"><span class="dot" id="dot"></span><span id="connText">demo data (no backend)</span></div>
   </header>
 
@@ -205,7 +224,17 @@
       <p class="explain" id="explain"></p>
       <div class="readings" id="readings"></div>
       <div class="legend" id="legend"></div>
-      <div class="plot"><canvas id="chart"></canvas></div>
+      <div class="plot">
+        <div class="cam" id="camBox" hidden>
+          <div class="camhead"><span class="rec"></span>Live camera<select id="camSel" title="Pick a camera" hidden></select></div>
+          <div class="frame">
+            <video id="camVideo" autoplay muted playsinline></video>
+            <div class="camwait" id="camWait">Waiting for camera permission…</div>
+            <div class="camnote" id="camNote" hidden></div>
+          </div>
+        </div>
+        <div class="plotc"><canvas id="chart"></canvas></div>
+      </div>
     </div>
 
     <div class="right">
@@ -219,15 +248,6 @@
         <input id="askInput" placeholder="Ask Kelvin about your experiment…">
         <button type="submit" class="askBtn">Ask</button>
       </form>
-      <section class="panel" id="cameraDialog" aria-labelledby="cameraTitle" hidden>
-  <h2 id="cameraTitle">Lab camera</h2>
-  <video id="cameraPreview" autoplay muted playsinline hidden
-         style="width: 100%; max-height: 180px; object-fit: contain"></video>
-  <p id="cameraStatus" role="status">Camera off.</p>
-  <button type="button" class="rprint" id="cameraStart">Start camera</button>
-  <button type="button" class="rclose" id="cameraStop" disabled>Stop camera</button>
-  <button type="button" class="rclose" id="cameraClose">Close</button>
-</section>
       <div class="rx">
         <div class="head"><h3>Suggested fix</h3><div class="settings" id="settingsLine"></div></div>
         <div class="body"><div id="rxBody"><div class="empty">Nothing to fix right now.</div></div><button class="apply" id="applyBtn" disabled>Apply fix</button></div>
@@ -276,12 +296,18 @@
 <script>
 // ------------------------------------------------------------ config
 const WS_URL = "ws://localhost:8000/ws";
-const WINDOW_S = { motor: 10, cooling: 120 };
+const WINDOW_S = { motor: 10, cooling: 120, calib: 15 };
+const CAL_OK = { pitch: 4, roll: 5 };                  // same limits as the backend
 const LABS = {
   motor: {
     explain: "<b>What you're looking at:</b> a student's code is trying to hold a robot's wheel at a set speed. The blue line is the real wheel, the dashed line is where it should be.",
     legend: ["Wheel speed", "Target speed"],
     stable: "The wheel is doing exactly what the student asked.",
+  },
+  calib: {
+    explain: "<b>What you're looking at:</b> a student holds a balancing robot. Before it can balance, its tilt sensor has to learn which way is straight up. The drawings lean exactly as the real robot does.",
+    legend: ["Robot now", "Straight up"],
+    stable: "Hold it straight up and say \"Kelvin, calibrate.\"",
   },
   cooling: {
     explain: "<b>What you're looking at:</b> a cup of hot water cooling down. Physics predicts the dashed curve. The blue line is the real thermometer reading.",
@@ -294,13 +320,13 @@ const LABS = {
 const $ = id => document.getElementById(id);
 let lab = "motor", live = false, wasLive = false, ws = null;
 let settings = { kp: 1.2, ki: 0.4, kd: 0.05 };
-let latest = { motor: {}, cooling: {} };
-const series = { motor: [], cooling: [] };
-const marks = { motor: [], cooling: [] };            // chart annotations {t, text}
-const state = { motor: "stable", cooling: "stable" }; // stable | mistake | fixing | fixed
-const message = { motor: "", cooling: "" };
-const fixes = { motor: null, cooling: null };
-const lastIssue = { motor: "", cooling: "" };         // what the latest open mistake was, e.g. "drag"
+let latest = { motor: {}, cooling: {}, calib: {} };
+const series = { motor: [], cooling: [], calib: [] };
+const marks = { motor: [], cooling: [], calib: [] };            // chart annotations {t, text}
+const state = { motor: "stable", cooling: "stable", calib: "stable" }; // stable | mistake | fixing | fixed
+const message = { motor: "", cooling: "", calib: "" };
+const fixes = { motor: null, cooling: null, calib: null };
+const lastIssue = { motor: "", cooling: "", calib: "" };         // what the latest open mistake was, e.g. "drag"
 const log = [];                                       // {lab, time, what, fix, result}
 let fixedTimer = null;
 
@@ -311,7 +337,13 @@ function handle(msg) {
   if (msg.type === "applied") return markApplied(msg.fix || {}, msg.before);
   if (msg.type === "fix_update") { fixes[msg.lab || "motor"] = msg.fix; return render(); }
   if (msg.type === "undone") return markUndone();
-  if (msg.type === "action" && msg.action === "switch_lab") return switchLab(msg.lab === "cooling" ? "cooling" : "motor");
+  if (msg.type === "action" && msg.action === "switch_lab") return switchLab(LABS[msg.lab] ? msg.lab : "motor");
+  if (msg.type === "calibrating") {
+    state.calib = "fixing"; asked.calib = ""; message.calib = "Calibrating. Hold it straight up and still for four seconds.";
+    const open = [...log].reverse().find(e => e.lab === "calib" && e.result === "open");
+    if (open) open.result = "applied";
+    return render();
+  }
     if (msg.type === "ta_status") {
     $("rTAStatus").textContent = msg.text;
     $("rSendTA").disabled = false;
@@ -322,6 +354,7 @@ function handle(msg) {
   if (msg.type === "settings") { settings = { kp: +msg.kp, ki: +msg.ki, kd: +msg.kd }; return render(); }
   if (msg.lab === "motor") { latest.motor = msg; push("motor", { t: msg.t / 1000, a: msg.speed, b: msg.target }); }
   else if (msg.lab === "cooling") { latest.cooling = msg; push("cooling", { t: msg.t / 1000, a: msg.temp, b: msg.expected }); }
+  else if (msg.lab === "calib") { latest.calib = msg; push("calib", { t: msg.t / 1000, a: msg.pitch, b: msg.roll }); }
 }
 function push(which, p) {
   const s = series[which];
@@ -355,18 +388,19 @@ function onDiagnosis(d) {
     state[L] = "mistake";
     lastIssue[L] = d.issue || "";
     fixes[L] = d.fix || null;
-    log.push({ lab: L, time: clock(), what: shortWhat(d), fix: d.fix ? fixText(d.fix) : handFix(d), result: "open" });
+    log.push({ lab: L, time: clock(), what: shortWhat(d), fix: d.fix ? fixText(d.fix) : handFix(d), result: "open", photo: camSnap() });
     marks[L].push({ t: nowT(L), text: shortMark(d), good: false });
   }
   speak(d.text);
   render();
 }
 function shortWhat(d) {
-  const m = (d.text || "").match(/\d+ (percent|degrees)/);
+  const m = (d.text || "").match(/\d+(\.\d+)? (percent|degrees)/);
   const names = { overshoot: "Wheel overshot its target", overshoot_kp: "Wheel overshot its target", slow: "Wheel too slow to reach target", steady_error: "Wheel settled below target",
                   saturated: "Motor maxed out", jitter: "Motor power jittering", probe_out: "Reading dropped off the curve", not_fixed: "Still overshooting",
                   drag: "Something dragging on the wheel", drag_load: "Something loading the wheel", probe_fast: "Reading fell too fast for cooling water",
-                  probe_high: "Reading rose above the curve" };
+                  probe_high: "Reading rose above the curve", cal_tilted: "Calibrated while leaning", cal_sideways: "Calibrated while tipped sideways",
+                  cal_moved: "Moved during calibration", cal_rejected_tilt: "Calibrated too far from upright", cal_sensor: "Sensor bumped during calibration" };
   return (names[d.issue] || "Something looks wrong") + (m ? " by " + m[0] : "");
 }
 function shortMark(d) {
@@ -380,7 +414,10 @@ function shortMark(d) {
   return "look here";
 }
 const HAND = { probe_out: "Put the probe back in the water", probe_fast: "Put the probe back in the water",
-               probe_high: "Check what's touching the probe", drag: "Take whatever is touching the wheel off it", drag_load: "Take whatever is touching the wheel off it" };
+               probe_high: "Check what's touching the probe",
+               cal_tilted: "Hold it straight up, then say \"calibrate\"", cal_sideways: "Stand it straight up, then say \"calibrate\"",
+               cal_moved: "Hold it still for four seconds, then say \"calibrate\"", cal_rejected_tilt: "Stand it straight up, then say \"calibrate\"",
+               cal_sensor: "Hold it still, then say \"calibrate\"", drag: "Take whatever is touching the wheel off it", drag_load: "Take whatever is touching the wheel off it" };
 const handFix = d => HAND[d.issue] || "Check the setup by hand";
 const fixText = f => Object.keys(f).map(k => k + " " + (+settings[k] || 0).toFixed(2) + " → " + (+f[k]).toFixed(2)).join(", ");
 
@@ -439,7 +476,7 @@ function speak(text, followUp) {   // followUp: let the student answer without s
 
 
 // ------------------------------------------------------------ ask Kelvin
-const asked = { motor: "", cooling: "" };
+const asked = { motor: "", cooling: "", calib: "" };
 function onAnswer(a) {
   if (a.report_sent && $("rTAStatus")) $("rTAStatus").textContent = a.report_sent === "ok" ? "Sent to TA ✓" : "Not sent";
   asked[lab] = a.from === "ta" ? (a.question ? "Your TA texted: " + a.question : "Message from your TA") : "You asked: " + a.question;
@@ -618,16 +655,18 @@ function showReport(r) {
   const fixed = r.fixed !== undefined ? r.fixed : log.filter(e => e.result === "fixed").length;
   const mins = r.minutes || Math.max(1, Math.round((Date.now() - pageOpened) / 60000));
   const st = r.settings || settings;
-  $("rDate").textContent = new Date().toLocaleString([], { dateStyle: "full", timeStyle: "short" }) + " · " + (lab === "motor" ? "Motor control lab" : "Cooling lab");
+  $("rDate").textContent = new Date().toLocaleString([], { dateStyle: "full", timeStyle: "short" }) + " · " + ({ motor: "Motor control lab", cooling: "Cooling lab", calib: "Calibration lab" })[lab];
   $("rSummary").textContent = r.summary ||
     ("In " + mins + " minute" + (mins === 1 ? "" : "s") + ", Kelvin caught " + mistakes + " mistake" + (mistakes === 1 ? "" : "s") +
      " and confirmed " + fixed + " fix" + (fixed === 1 ? "" : "es") + ". The controller is now at kp " + (+st.kp).toFixed(2) + ".");
   $("rStats").innerHTML =
     "<div>Time<b>" + mins + " min</b></div><div>Mistakes caught<b>" + mistakes + "</b></div><div>Fixes that worked<b>" + fixed + "</b></div>" +
-    "<div>Settings now<b>kp " + (+st.kp).toFixed(2) + "</b></div>";
+    (lab === "calib"
+      ? "<div>Calibration<b>" + (latest.calib.calibrated && latest.calib.offset !== null && latest.calib.offset !== undefined ? Math.abs(latest.calib.offset).toFixed(1) + "° off" : "not done") + "</b></div>"
+      : "<div>Settings now<b>kp " + (+st.kp).toFixed(2) + "</b></div>");
   try { $("rChart").src = $("chart").toDataURL("image/png"); } catch (e) {}
   const names = { open: "Needs a fix", applied: "Fix applied", fixed: "Fixed", partial: "Helped, not enough", undone: "Undone" };
-  $("rRows").innerHTML = log.length ? log.map(e => "<tr><td>" + e.time + "</td><td>" + (e.lab === "motor" ? "Motor" : "Cooling") + "</td><td>" + e.what +
+  $("rRows").innerHTML = log.length ? log.map(e => "<tr><td>" + e.time + "</td><td>" + ({ motor: "Motor", cooling: "Cooling", calib: "Calibration" })[e.lab] + "</td><td>" + e.what + (e.photo ? '<img class="shot" src="' + e.photo + '" alt="Camera photo of the mistake">' : "") +
     "</td><td>" + e.fix + "</td><td>" + (names[e.result] || e.result) + "</td></tr>").join("") : '<tr><td colspan="5">No mistakes this session.</td></tr>';
   $("report").hidden = false;
   if (message[lab] === "Writing your report…") { message[lab] = ""; render(); }
@@ -638,6 +677,7 @@ function showReport(r) {
 // The backend answers with an "applied" message, and that updates the screen.
 const demoUndo = [];
 $("applyBtn").onclick = () => {
+  if (lab === "calib") { askKelvin("calibrate"); return; }      // the fix for a bad calibration is to calibrate again
   const f = fixes.motor; if (!f) return;
   if (live && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "apply_fix", fix: f }));
   else demoApply(f);
@@ -672,7 +712,7 @@ function connect() {
   try { ws = new WebSocket(WS_URL); } catch (e) { return setTimeout(connect, 2000); }
   ws.onopen = () => {
     live = true; wasLive = true;
-    for (const k of ["motor", "cooling"]) { series[k].length = 0; marks[k].length = 0; state[k] = "stable"; message[k] = ""; fixes[k] = null; latest[k] = {}; }
+    for (const k of ["motor", "cooling", "calib"]) { series[k].length = 0; marks[k].length = 0; state[k] = "stable"; message[k] = ""; fixes[k] = null; latest[k] = {}; }
     log.length = 0; taMsgs.length = 0; taUnread = 0; render(); renderTa();
   };
   ws.onmessage = ev => { try { handle(JSON.parse(ev.data)); } catch (e) {} };
@@ -798,21 +838,28 @@ function render() {
   const L = LABS[lab], st = state[lab];
   $("explain").innerHTML = L.explain;
   $("verdict").className = "verdict " + (st === "stable" ? "" : st);
-  $("stamp").textContent = STAMPS[st];
+  $("stamp").textContent = lab === "calib" && st === "fixing" ? "Calibrating" : lab === "calib" && st === "fixed" ? "Calibrated" : STAMPS[st];
   $("verdictText").textContent =
     st === "stable" ? L.stable :
+    st === "mistake" && lab === "calib" ? "The calibration is off. Kelvin found the cause below." :
+    st === "fixing" && lab === "calib" ? "Calibrating now. Hold it straight up and still." :
+    st === "fixed" && lab === "calib" ? "Calibrated. The robot knows which way is straight up." :
     st === "mistake" ? (lab === "motor"
       ? (lastIssue.motor === "drag" || lastIssue.motor === "drag_load" ? "Something physical is slowing the wheel. The settings are fine." : "Something is wrong with the student's controller. Kelvin found the cause below.")
       : "A reading broke away from the physics. Kelvin found the cause below.") :
     st === "fixing" ? "The fix is on the robot. Kelvin is watching the next run." :
     "Kelvin's fix worked. Back on track.";
   $("caught").textContent = log.filter(e => e.lab === lab).length;
-  $("legend").innerHTML = '<span><i class="key"></i>' + L.legend[0] + '</span><span><i class="key target"></i>' + L.legend[1] + "</span>";
+  $("legend").innerHTML = lab === "calib" ? "" : '<span><i class="key"></i>' + L.legend[0] + '</span><span><i class="key target"></i>' + L.legend[1] + "</span>";
   $("asked").textContent = asked[lab] || "";
   $("said").textContent = message[lab] || "Watching the experiment. I'll speak up the moment something looks wrong.";
 
   const f = fixes[lab];
-  if (f) {
+  $("applyBtn").textContent = lab === "calib" ? "Calibrate again" : "Apply fix";
+  if (lab === "calib") {
+    $("rxBody").innerHTML = '<div class="empty">' + (st === "mistake" ? handFix({ issue: lastIssue.calib }) + "." : "Nothing to fix right now.") + "</div>";
+    $("applyBtn").disabled = !(live && st === "mistake");
+  } else if (f) {
     $("rxBody").innerHTML = Object.keys(f).map(k =>
       '<div class="change">' + k + ' <span class="old">' + (+settings[k] || 0).toFixed(2) + '</span><span class="arrow">→</span><span class="new">' + (+f[k]).toFixed(2) + "</span></div>").join("");
     $("applyBtn").disabled = false;
@@ -820,21 +867,26 @@ function render() {
     $("rxBody").innerHTML = '<div class="empty">' + (st === "mistake" ? handFix({ issue: lastIssue[lab] }) + "." : "Nothing to fix right now.") + "</div>";
     $("applyBtn").disabled = true;
   }
-  $("settingsLine").textContent = lab === "motor" ? "now: kp " + (+settings.kp).toFixed(2) + " · ki " + (+settings.ki).toFixed(2) + " · kd " + (+settings.kd).toFixed(2) : "";
+  $("settingsLine").textContent = lab === "calib" ? (latest.calib.calibrated ? "calibrated" : "not calibrated yet") : lab === "motor" ? "now: kp " + (+settings.kp).toFixed(2) + " · ki " + (+settings.ki).toFixed(2) + " · kd " + (+settings.kd).toFixed(2) : "";
 
   const rows = log.filter(e => e.lab === lab).slice().reverse();
   const label = { open: ["open", "Needs a fix"], applied: ["applied", "Fix applied"], fixed: ["fixed", "Fixed ✓"], partial: ["partial", "Helped, not enough"], undone: ["undone", "Undone"] };
   $("logBody").innerHTML = rows.map(e =>
     '<li><div class="top"><span class="time">' + e.time + '</span><span class="chip ' + label[e.result][0] + '">' + label[e.result][1] + '</span></div>' +
-    '<div class="what">' + e.what + '</div><div class="fx">' + e.fix + '</div></li>').join("");
+    '<div class="what">' + e.what + '</div><div class="fx">' + e.fix + '</div>' +
+    (e.photo ? '<img class="shot" src="' + e.photo + '" alt="Camera photo from the moment Kelvin caught this">' : "") + '</li>').join("");
   const ta = logView === "ta";
   $("emptyLog").style.display = ta || rows.length ? "none" : "block";
   $("logBody").style.display = ta ? "none" : "";
   $("taBody").hidden = !ta;
 
+  $("camBox").className = "cam" + (st === "mistake" ? " bad" : st === "fixed" ? " good" : "");
+  $("camNote").hidden = !(st === "mistake" || st === "fixed");
+  $("camNote").textContent = st === "mistake" ? "Kelvin caught a mistake here" : st === "fixed" ? "Fixed ✓" : "";
   $("dot").className = "dot" + (live ? " live" : "");
   $("connText").textContent = live ? "live from the lab bench" : wasLive ? "backend stopped, reconnecting..." : "demo data (no backend)";
   $("demoRow").style.display = live ? "none" : "flex";
+  $("demoRow").style.display = live || lab === "calib" ? "none" : "flex";
   $("demoBtn").textContent = lab === "motor" ? "Demo: load a bad controller" : (sim.probeOut ? "Demo: put the probe back" : "Demo: pull the probe out");
 }
 
@@ -842,7 +894,14 @@ function readingsHTML() {
   const m = latest.motor, c = latest.cooling;
   const n = (v, d) => (v === undefined || v === null || isNaN(v)) ? "--" : Number(v).toFixed(d);
   let items;
-  if (lab === "motor") {
+  if (lab === "calib") {
+    const k = latest.calib, cal = k.calibrated && k.offset !== null && k.offset !== undefined;
+    items = [
+      ["Forward / back", n(k.pitch, 1), "°", k.pitch === undefined ? "waiting for the robot" : Math.abs(k.pitch) <= CAL_OK.pitch ? "straight enough" : (k.pitch > 0 ? "leaning toward the batteries" : "leaning away from the batteries")],
+      ["Sideways", n(k.roll, 1), "°", k.roll === undefined ? "" : Math.abs(k.roll) <= CAL_OK.roll ? "straight enough" : "tipped on its side"],
+      ["Calibrated upright", cal ? n(Math.abs(k.offset), 1) : "--", cal ? "° off" : "", cal ? (Math.abs(k.offset) <= CAL_OK.pitch ? "good" : "it thinks a lean is upright") : "not calibrated yet"],
+    ];
+  } else if (lab === "motor") {
     const gap = (m.speed !== undefined) ? Math.abs(m.target - m.speed) : null;
     items = [
       ["Wheel speed", n(m.speed, 0), "", "how fast it's actually spinning"],
@@ -860,11 +919,65 @@ function readingsHTML() {
   return items.map(i => '<div class="reading"><div class="k">' + i[0] + '</div><div class="v">' + i[1] + "<small>" + i[2] + '</small></div><div class="hint">' + i[3] + "</div></div>").join("");
 }
 
+// Calibration lab: two drawings of the robot that lean exactly as the real one does.
+function drawTilt(x, w, h) {
+  const k = latest.calib, has = k.pitch !== undefined;
+  const views = [
+    { title: "Side view: forward / back", deg: has ? k.pitch : 0, ok: CAL_OK.pitch, side: true },
+    { title: "Front view: sideways", deg: has ? k.roll : 0, ok: CAL_OK.roll, side: false },
+  ];
+  const ground = h - 48, bodyH = Math.max(60, Math.min(h - 120, 230)), bodyW = Math.max(30, Math.min(54, bodyH * 0.24));
+  views.forEach((v, i) => {
+    const cx = w * (i === 0 ? 0.27 : 0.73), good = Math.abs(v.deg) <= v.ok, col = !has ? "#8a8471" : good ? "#2f7d4f" : "#c0392b";
+    x.font = "600 15px 'IBM Plex Sans', system-ui, sans-serif"; x.fillStyle = "#55607a"; x.textAlign = "center";
+    x.fillText(v.title, cx, 20);
+    x.font = "700 40px 'IBM Plex Mono', Consolas, monospace"; x.fillStyle = col;
+    x.fillText(has ? Math.abs(v.deg).toFixed(1) + "°" : "--", cx, 62);
+    if (v.side) {
+      x.font = "13px 'IBM Plex Sans', system-ui, sans-serif"; x.fillStyle = "#8a8471";
+      x.textAlign = "left"; x.fillText("batteries →", cx + 30, Math.min(h - 2, ground + 40));
+    }
+    // ground and the straight-up line
+    x.strokeStyle = "rgba(70,110,160,.35)"; x.lineWidth = 2; x.beginPath(); x.moveTo(cx - 120, ground + 22); x.lineTo(cx + 120, ground + 22); x.stroke();
+    x.setLineDash([7, 6]); x.strokeStyle = "#2f7d4f"; x.lineWidth = 2;
+    x.beginPath(); x.moveTo(cx, ground); x.lineTo(cx, ground - bodyH - 26); x.stroke(); x.setLineDash([]);
+    x.font = "15px Caveat, 'Segoe Print', cursive"; x.fillStyle = "#2f7d4f"; x.textAlign = "center";
+    x.fillText("straight up", cx, ground - bodyH - 32);
+    // where the robot THINKS straight up is (side view, once calibrated)
+    if (v.side && k.calibrated && k.offset !== null && k.offset !== undefined && Math.abs(k.offset) > CAL_OK.pitch) {
+      const a = k.offset * Math.PI / 180, L = bodyH + 20;
+      x.setLineDash([3, 5]); x.strokeStyle = "#b9770e"; x.lineWidth = 2.5;
+      x.beginPath(); x.moveTo(cx, ground); x.lineTo(cx + Math.sin(a) * L, ground - Math.cos(a) * L); x.stroke(); x.setLineDash([]);
+      x.font = "700 18px Caveat, 'Segoe Print', cursive"; x.fillStyle = "#b9770e";
+      x.textAlign = a > 0 ? "left" : "right";
+      x.fillText(w < 640 ? "robot's \"up\"" : "robot thinks this is up", cx + Math.sin(a) * L + (a > 0 ? 6 : -6), ground - Math.cos(a) * L);
+    }
+    // the robot body, pivoting on the wheel axle
+    x.save(); x.translate(cx, ground); x.rotate((has ? v.deg : 0) * Math.PI / 180);
+    x.fillStyle = good || !has ? "rgba(47,125,79,.14)" : "rgba(192,57,43,.14)"; x.strokeStyle = col; x.lineWidth = 3;
+    x.beginPath(); x.rect(-bodyW / 2, -bodyH, bodyW, bodyH); x.fill(); x.stroke();
+    x.fillStyle = col; x.fillRect(-bodyW / 2 + 6, -bodyH + 8, bodyW - 12, 10);       // the board on top
+    if (!v.side) { x.fillStyle = "#33415c"; x.fillRect(-bodyW / 2 - 18, -22, 12, 44); x.fillRect(bodyW / 2 + 6, -22, 12, 44); }   // both wheels tip with it
+    x.restore();
+    if (v.side) { x.fillStyle = "#33415c"; x.beginPath(); x.arc(cx, ground, 22, 0, Math.PI * 2); x.fill(); }
+    // wheels driving (armed)
+    if (v.side && k.armed && Math.abs(k.wheel || 0) > 20) {
+      x.font = "700 20px Caveat, 'Segoe Print', cursive"; x.fillStyle = "#2457a6"; x.textAlign = "center";
+      x.fillText(k.wheel > 0 ? "wheels driving →" : "← wheels driving", cx, 86);
+    }
+  });
+  if (!has) {
+    x.font = "16px 'IBM Plex Sans', system-ui, sans-serif"; x.fillStyle = "#8a8471"; x.textAlign = "center";
+    x.fillText("Waiting for the robot's tilt sensor…", w / 2, h / 2);
+  }
+}
+
 function draw() {
   const cv = $("chart"), dpr = window.devicePixelRatio || 1, w = cv.parentNode.clientWidth, h = cv.parentNode.clientHeight;
   if (w < 10 || h < 10) return;
   if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
   const x = cv.getContext("2d"); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h);
+  if (lab === "calib") return drawTilt(x, w, h);
   const s = series[lab], L = 44, R = w - 12, T = 30, B = h - 24;
   let lo = lab === "motor" ? 0 : 15, hi = lab === "motor" ? 140 : 85;
   for (const p of s) { if (p.a > hi) hi = p.a; if (p.a < lo) lo = p.a; }
@@ -904,67 +1017,66 @@ function draw() {
 
 let lastReadings = 0;
 function frame(ts) {
-  if (ts - lastReadings > 120) { $("readings").innerHTML = readingsHTML(); lastReadings = ts; }
+  if (ts - lastReadings > 120) {
+    $("readings").innerHTML = readingsHTML(); lastReadings = ts;
+    if (lab === "calib") $("settingsLine").textContent = latest.calib.calibrated ? "calibrated" : "not calibrated yet";
+  }
   draw(); requestAnimationFrame(frame);
 }
-render(); connect(); requestAnimationFrame(frame);
-{
-  const cameraDialog = document.getElementById("cameraDialog");
-  const preview = document.getElementById("cameraPreview");
-  const status = document.getElementById("cameraStatus");
-  const start = document.getElementById("cameraStart");
-  const stop = document.getElementById("cameraStop");
-  let requestId = 0;
-
-  function stopCamera() {
-    requestId += 1;
-    preview.srcObject?.getTracks().forEach(track => track.stop());
-    preview.srcObject = null;
-    preview.hidden = true;
-    status.textContent = "Camera off.";
-    start.disabled = false;
-    stop.disabled = true;
-  }
-  
-  stop.onclick = stopCamera;
-  document.getElementById("cameraOpen").onclick = () => {
-  cameraDialog.hidden = false;
-};
-
-document.getElementById("cameraClose").onclick = () => {
-  stopCamera();
-  cameraDialog.hidden = true;
-};
-  window.addEventListener("pagehide", stopCamera);
-
-  start.onclick = async () => {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      status.textContent = "Camera access is unavailable. Open Kelvin on localhost or HTTPS.";
-      return;
-    }
-
-    const currentRequest = ++requestId;
-    start.disabled = true;
-    stop.disabled = false;
-    status.textContent = "Waiting for camera permission…";
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      if (currentRequest !== requestId || cameraDialog.hidden) {
-        stream.getTracks().forEach(track => track.stop());
-        return;
-      }
-
-      preview.srcObject = stream;
-      preview.hidden = false;
-      status.textContent = "Camera on.";
-    } catch {
-      if (currentRequest !== requestId) return;
-      stopCamera();
-      status.textContent = "Could not start the camera. Check browser permissions and try again.";
-    }
-  };
+// ------------------------------------------------------------ lab camera
+// Live view of the bench next to the readings, and a photo saved with every mistake Kelvin catches.
+// Camera start/stop logic by Gissell; the video never leaves this laptop.
+let camStream = null, camRequest = 0;
+function camSnap() {
+  const v = $("camVideo");
+  if (!camStream || !v.videoWidth) return null;
+  try {
+    const c = document.createElement("canvas"); c.width = 320; c.height = Math.round(320 * v.videoHeight / v.videoWidth);
+    c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+    return c.toDataURL("image/jpeg", 0.7);
+  } catch (e) { return null; }
 }
+function camStop() {
+  camRequest++;
+  if (camStream) camStream.getTracks().forEach(t => t.stop());
+  camStream = null; $("camVideo").srcObject = null;
+  $("camBox").hidden = true; $("cameraBtn").classList.remove("on");
+}
+async function camStart(deviceId) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    message[lab] = "This browser can't open the camera here. Open Kelvin at http://localhost:8000."; return render();
+  }
+  const mine = ++camRequest;
+  if (camStream) camStream.getTracks().forEach(t => t.stop());
+  camStream = null;
+  $("camBox").hidden = false; $("cameraBtn").classList.add("on");
+  $("camWait").hidden = false; $("camWait").textContent = "Waiting for camera permission…";
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: deviceId ? { deviceId: { exact: deviceId } } : { width: { ideal: 1280 } }, audio: false });
+    if (mine !== camRequest) { stream.getTracks().forEach(t => t.stop()); return; }
+    camStream = stream; $("camVideo").srcObject = stream; $("camWait").hidden = true;
+    const active = stream.getVideoTracks()[0].getSettings().deviceId;
+    try { localStorage.setItem("kelvinCam", "on"); if (active) localStorage.setItem("kelvinCamId", active); } catch (e) {}
+    const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
+    $("camSel").hidden = cams.length < 2;
+    $("camSel").innerHTML = cams.map((d, i) => '<option value="' + d.deviceId + '"' + (d.deviceId === active ? " selected" : "") + ">" +
+      (d.label || "Camera " + (i + 1)).replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)/i, "") + "</option>").join("");
+  } catch (e) {
+    if (mine !== camRequest) return;
+    if (deviceId) { try { localStorage.removeItem("kelvinCamId"); } catch (err) {} return camStart(); }   // that camera is gone, use any
+    $("camWait").hidden = false;
+    $("camWait").textContent = "Couldn't start the camera. Allow it in the address bar, or close other apps using it, then click Camera again.";
+  }
+}
+$("cameraBtn").onclick = () => {
+  if (!$("camBox").hidden) { camStop(); try { localStorage.setItem("kelvinCam", "off"); } catch (e) {} }
+  else camStart();
+};
+$("camSel").onchange = e => camStart(e.target.value);
+window.addEventListener("pagehide", camStop);
+try { if (localStorage.getItem("kelvinCam") === "on") camStart(localStorage.getItem("kelvinCamId") || undefined); } catch (e) {}
+
+render(); connect(); requestAnimationFrame(frame);
 </script>
 </body>
 </html>
