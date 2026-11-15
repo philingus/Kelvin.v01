@@ -190,6 +190,7 @@
       <button class="tab" data-lab="cooling" role="tab">Cooling lab</button>
     </div>
     <div class="spacer"></div>
+    <button type="button" class="repBtn" id="cameraOpen">Camera</button>
     <div class="conn"><span class="dot" id="dot"></span><span id="connText">demo data (no backend)</span></div>
   </header>
 
@@ -218,6 +219,15 @@
         <input id="askInput" placeholder="Ask Kelvin about your experiment…">
         <button type="submit" class="askBtn">Ask</button>
       </form>
+      <section class="panel" id="cameraDialog" aria-labelledby="cameraTitle" hidden>
+  <h2 id="cameraTitle">Lab camera</h2>
+  <video id="cameraPreview" autoplay muted playsinline hidden
+         style="width: 100%; max-height: 180px; object-fit: contain"></video>
+  <p id="cameraStatus" role="status">Camera off.</p>
+  <button type="button" class="rprint" id="cameraStart">Start camera</button>
+  <button type="button" class="rclose" id="cameraStop" disabled>Stop camera</button>
+  <button type="button" class="rclose" id="cameraClose">Close</button>
+</section>
       <div class="rx">
         <div class="head"><h3>Suggested fix</h3><div class="settings" id="settingsLine"></div></div>
         <div class="body"><div id="rxBody"><div class="empty">Nothing to fix right now.</div></div><button class="apply" id="applyBtn" disabled>Apply fix</button></div>
@@ -898,6 +908,63 @@ function frame(ts) {
   draw(); requestAnimationFrame(frame);
 }
 render(); connect(); requestAnimationFrame(frame);
+{
+  const cameraDialog = document.getElementById("cameraDialog");
+  const preview = document.getElementById("cameraPreview");
+  const status = document.getElementById("cameraStatus");
+  const start = document.getElementById("cameraStart");
+  const stop = document.getElementById("cameraStop");
+  let requestId = 0;
+
+  function stopCamera() {
+    requestId += 1;
+    preview.srcObject?.getTracks().forEach(track => track.stop());
+    preview.srcObject = null;
+    preview.hidden = true;
+    status.textContent = "Camera off.";
+    start.disabled = false;
+    stop.disabled = true;
+  }
+  
+  stop.onclick = stopCamera;
+  document.getElementById("cameraOpen").onclick = () => {
+  cameraDialog.hidden = false;
+};
+
+document.getElementById("cameraClose").onclick = () => {
+  stopCamera();
+  cameraDialog.hidden = true;
+};
+  window.addEventListener("pagehide", stopCamera);
+
+  start.onclick = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      status.textContent = "Camera access is unavailable. Open Kelvin on localhost or HTTPS.";
+      return;
+    }
+
+    const currentRequest = ++requestId;
+    start.disabled = true;
+    stop.disabled = false;
+    status.textContent = "Waiting for camera permission…";
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      if (currentRequest !== requestId || cameraDialog.hidden) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+
+      preview.srcObject = stream;
+      preview.hidden = false;
+      status.textContent = "Camera on.";
+    } catch {
+      if (currentRequest !== requestId) return;
+      stopCamera();
+      status.textContent = "Could not start the camera. Check browser permissions and try again.";
+    }
+  };
+}
 </script>
 </body>
 </html>
