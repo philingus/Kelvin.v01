@@ -75,9 +75,9 @@ const float RATE_FILTER_TAU = 0.015f;
 const float WHEEL_FILTER_TAU = 0.05f;
 
 // -------------------- Arming / shutdown --------------------
-const float ARM_ANGLE_DEG = 4.0f;
-const float ARM_RATE_DPS = 8.0f;
-const uint32_t ARM_STABLE_MS = 400;
+const float ARM_ANGLE_DEG = 8.0f;    // hand-held, so be forgiving
+const float ARM_RATE_DPS = 25.0f;
+const uint32_t ARM_STABLE_MS = 250;
 const float FALL_ANGLE_DEG = 30.0f;
 
 // -------------------- State --------------------
@@ -291,10 +291,10 @@ void calibrate() {
   stableWindow = false;
 
   Serial.println(F("# Hold UPRIGHT and STILL."));
-  Serial.println(F("# Calibration starts in 2 seconds."));
-  delay(2000);
+  Serial.println(F("# Calibration starts in 1 second."));
+  delay(1000);
 
-  const int N = 400;
+  const int N = 200;   // about 1 second of samples, so the whole calibration takes 2 seconds
   float angleSum = 0.0f, angleSquareSum = 0.0f;
   float gyroSum = 0.0f, gyroSquareSum = 0.0f;
   float magnitudeSum = 0.0f;

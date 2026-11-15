@@ -31,6 +31,8 @@ The Uno runs `firmware/dip/kelvin_dip/kelvin_dip.ino` (9600 baud). The student d
 python server.py --dip-port COM16 --water-temp 58
 ```
 
+For exact, instant dip timing, add two jumper wires: Uno A0 taped along the probe with its tip beside the probe tip, and Uno GND with its tip resting in the hot water. The board switches to contact timing the first time the A0 wire touches the water. Without them it times dips from temperature alone, which lags by a second or more.
+
 Leave out `--water-temp` and hold the probe in the water for 15 seconds instead: Kelvin uses that reading. Voice: "fix it" (turns the cue on), "turn the cue off", "the water is 58 degrees", "set the dip time to 5 seconds". Dips are logged to `backend/logs/dip_*.csv`. Simulator: `python server.py --fake --lab dip`, then type `soak`, `dip 6.5`, `dip`.
 
 ## The problem

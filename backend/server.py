@@ -75,8 +75,37 @@ settings = {"kp": 4.0, "ki": 10.0, "kd": 0.0}     # good settings for our MinSeg
 
 # ---------------------------------------------------------------- broadcast
 
+said_log = []          # (time, text) of the last few things Kelvin said out loud
+
+
+def strip_echo(question: str) -> str:
+    """The mic sometimes hears Kelvin's own voice and sends it back as if the student said it.
+    Cut out any run of 4+ words that matches something Kelvin said in the last 45 seconds."""
+    import difflib
+    norm = lambda t: re.sub(r"[^a-z0-9 ]", " ", t.lower().replace("°", " degrees ")).split()
+    q_words = question.split()
+    q_norm = [(" ".join(norm(w)) or "") for w in q_words]
+    keep = [True] * len(q_words)
+    for when, text in said_log:
+        if time.time() - when > 45:
+            continue
+        said = norm(text)
+        flat = [w.split()[0] if w else "" for w in q_norm]
+        for blk in difflib.SequenceMatcher(None, flat, said, autojunk=False).get_matching_blocks():
+            if blk.size >= 4:
+                for i in range(blk.a, blk.a + blk.size):
+                    keep[i] = False
+    if all(keep):
+        return question
+    if keep.count(False) >= 0.4 * len(keep):
+        return ""                    # mostly Kelvin's own words: ignore the whole thing
+    return " ".join(w for w, k in zip(q_words, keep) if k)
+
 def send(msg: dict):
     """Thread-safe: queue a JSON message to every connected dashboard."""
+    if msg.get("type") in ("diagnosis", "answer") and msg.get("text"):
+        said_log.append((time.time(), str(msg["text"])))
+        del said_log[:-5]
     if loop is None:
         return
     text = json.dumps(msg)
@@ -125,39 +154,31 @@ TEMPLATES = {
                  "Check for anything touching the wheel.",
     "drag_gone": "The drag is gone and the wheel is back on target. Your settings were fine the whole time.",
     # calibration lab (tilt sensor on the MinSeg, robot held in the student's hands)
-    "cal_tilted": "You calibrated it {pitch} degrees {pdir}, not straight up. The board only rejects past 15 degrees, "
-                  "so it accepted this, and now it thinks that lean is upright. It would balance crooked. "
-                  "Hold it straight up and say calibrate again.",
-    "cal_sideways": "You calibrated it tipped {roll} degrees on its side. The board never checks sideways tilt, "
-                    "so it accepted this. Stand it straight up and say calibrate again.",
-    "cal_moved": "The board threw that calibration out because the robot moved while I was measuring: {how}. "
-                 "Hold it still for four seconds, elbows on the table helps, and say calibrate again.",
-    "cal_rejected_tilt": "The board threw that calibration out: it was {pitch} degrees {pdir}, too far from straight up. "
-                         "Stand it straight and say calibrate again.",
-    "cal_sensor": "The board threw that calibration out: the tilt sensor felt {g} times gravity instead of 1, "
-                  "so it was bumped or swinging. Hold it still and say calibrate again.",
-    "cal_ok": "Calibration is good. It's within {pitch} degrees of straight up and {roll} sideways, and it held still. "
-              "Say arm when you want to test the wheels.",
-    "cal_fixed": "That worked. You were {before} degrees off before, and now you're within {after}. "
-                 "The robot knows which way is up. Say arm to test the wheels.",
+    "cal_tilted": "That calibration is off. You held it {pitch} degrees {pdir}, and the board accepted it, "
+                  "so now it thinks that lean is upright. Hold it straight and say calibrate.",
+    "cal_sideways": "That calibration is off. It was tipped {roll} degrees sideways, and the board never checks sideways. "
+                    "Stand it straight and say calibrate.",
+    "cal_moved": "The board rejected that one because it moved: {how}. Hold it still and say calibrate.",
+    "cal_rejected_tilt": "The board rejected that one. It was {pitch} degrees {pdir}, too far from upright. "
+                         "Stand it straight and say calibrate.",
+    "cal_sensor": "The board rejected that one. The sensor felt {g} times gravity, so it was bumped. "
+                  "Hold it still and say calibrate.",
+    "cal_ok": "Calibration is good, within {off} degrees of upright. Say arm to test the wheels.",
+    "cal_fixed": "That worked. It was {before} degrees off, and now it's within {after}. Say arm to test the wheels.",
     # time constant lab (dip the probe into hot water for a set time; kelvin_dip.ino on the Uno)
-    "dip_late": "You held the probe in for {dwell} seconds, not {target}. If you use {target} in the formula, the time "
-                "constant comes out as {tau_assumed} seconds, but it's really {tau_actual}. That's {pct} percent off. "
-                "{advice}",
-    "dip_early": "You pulled the probe out after {dwell} seconds, not {target}. If you use {target} in the formula, the "
-                 "time constant comes out as {tau_assumed} seconds, but it's really {tau_actual}. That's {pct} percent off. "
-                 "{advice}",
-    "dip_timing": "You held the probe in for {dwell} seconds, not {target}. {advice}",
-    "dip_not_reset": "The probe started that dip at {start} degrees, {above} above room temperature. It hadn't cooled "
-                     "back down, so the result isn't a clean step. Dry it off and wait until it reads about {room}, then dip again.",
-    "dip_need_water": "I need the water temperature before I can work out the time constant. "
-                      "Hold the probe in the water for fifteen seconds, or tell me the temperature.",
-    "dip_water": "Got it. The water is {water} degrees. Let the probe cool back to room temperature, then do a {target} second dip.",
-    "dip_ok": "Good dip. {dwell} seconds in the water, and the time constant comes out as {tau} seconds.",
-    "dip_fixed": "That worked. Your timing was off by {before} seconds before, and now it's off by {after}. "
+    "dip_late": "You held it in for {dwell} seconds, not {target}. That puts your time constant {pct} percent off: "
+                "{tau_assumed} seconds instead of {tau_actual}. {advice}",
+    "dip_early": "You pulled it out after {dwell} seconds, not {target}. That puts your time constant {pct} percent off: "
+                 "{tau_assumed} seconds instead of {tau_actual}. {advice}",
+    "dip_timing": "That dip lasted {dwell} seconds, not {target}. {advice}",
+    "dip_not_reset": "The probe hadn't cooled down. It started at {start} degrees, {above} above room temperature. "
+                     "Cool it in the cold cup, then dip again.",
+    "dip_need_water": "I need the water temperature first. Hold the probe in the hot water for ten seconds.",
+    "dip_water": "Got it, the water is {water} degrees. Cool the probe, then dip for {target} seconds.",
+    "dip_ok": "Good dip, {dwell} seconds. The time constant is {tau} seconds.",
+    "dip_fixed": "That worked. You were {before} seconds off before, and now you're within {after}. "
                  "The time constant is {tau} seconds.",
-    "wheels_ok": "The wheels push toward the lean, the way they should: when it tips, they drive under it to catch it. "
-                 "Say stop when you're done.",
+    "wheels_ok": "The wheels drive toward the lean, so it can catch itself. Say stop when you're done.",
 }
 OK_ISSUES = ("fixed", "fixed_gap", "fixed_reach", "fixed_sat", "probe_back", "drag_gone",
              "cal_ok", "cal_fixed", "wheels_ok", "dip_ok", "dip_fixed", "dip_water")      # these turn the dashboard green
@@ -449,7 +470,7 @@ def do_action(a: dict, lab: str, source: str = "student") -> str:
         calib_link.write("c")
         calib_watch.started()
         remember_event("calib", "student asked Kelvin to calibrate")
-        return "Hold it straight up and still for four seconds. Calibrating now."
+        return "Calibrating. Hold still."
     if t == "arm":
         if not calib_link:
             return "The tilt sensor isn't connected."
@@ -457,7 +478,7 @@ def do_action(a: dict, lab: str, source: str = "student") -> str:
         calib_watch.armed_at = time.time()
         calib_watch.wheel_votes = 0
         remember_event("calib", "student armed the motor")
-        return "Arming. Tilt it gently and watch the wheels. Say stop to turn the motor off."
+        return "Armed. Tilt it and watch the wheels."
     if t == "apply_fix":
         f = pending_fix["motor"]
         if not f:
@@ -520,6 +541,9 @@ def do_action(a: dict, lab: str, source: str = "student") -> str:
             motor_link.write(f"S,{v:g}")
         remember_event("motor", f"wheel set to hold a steady {v:g}")
         return f"Holding the wheel at a steady {v:g}. Say set the speed to step it up and down again."
+    if t in ("start", "stop") and dip_link and not motor_link and not calib_link:
+        return (f"There's no motor in this lab. Dip the probe for {dip_watch.target:g} seconds whenever you're ready, "
+                "and I'll time it.")
     if t == "stop":
         stepper["on"] = False
         if calib_link:
@@ -557,17 +581,21 @@ def quick_intent(q: str, lab: str = "", source: str = "student"):
         if re.search(r"^\W*(no|nope|deny|denied|block|don'?t|do not)\b", s):
             return {"type": "deny"}
     question = re.search(r"^\W*(why|what|how|is|was|did|does|should|explain|tell me)\b", s)
+    fixish = re.search(r"\bfix\b|\bapply\b|\bgo ahead\b|\bdo it\b|\btry again\b|\bagain\b|\bredo\b|\bretry\b", s)
     if calib_link and not question:
-        if re.search(r"\b(re-?)?calibrat\w*\b", s):
-            return {"type": "calibrate"}
         if re.search(r"\bdisarm\b", s):
             return {"type": "stop"}
         if re.search(r"\barm\b|\b(enable|turn on|start) (the )?(motors?|wheels?)\b", s):
             return {"type": "arm"}
+        if re.search(r"\b(re-?)?calibrat\w*\b|\bcalibration\b", s) or \
+                (fixish and lab == "calib" and not pending_fix["motor"] and not re.search(r"\b(report|ta|stop)\b", s)):
+            return {"type": "calibrate"}
     if dip_link and not question:
         num = re.search(r"(\d+(\.\d+)?)", s)
         if re.search(r"\b(cue|beep|buzzer|timer)\b", s):
             return {"type": "cue_off" if re.search(r"\b(off|stop|disable|no)\b", s) else "cue_on"}
+        if fixish and lab == "dip" and not pending_fix["motor"] and not re.search(r"\bagain\b|\bredo\b|\bretry\b", s):
+            return {"type": "cue_on"}
         if num and re.search(r"\bwater\b", s) and re.search(r"\bdegrees?\b|\bis\b|\bset\b", s):
             return {"type": "set_water", "value": float(num.group(1))}
         if num and re.search(r"\bseconds?\b", s) and re.search(r"\b(dip|dwell|target|hold|time)\b", s) and lab == "dip":
@@ -681,6 +709,13 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
     """Someone talked to Kelvin. source "student" = voice or typing at the bench, "ta" = a text through Photon.
     Do what they asked, or answer the question. Both share one memory, so the TA can ask about the bench."""
     question = question.strip()[:300]
+    if source == "student":
+        cleaned = strip_echo(question)
+        if cleaned != question:
+            print(f"[echo] heard Kelvin's own voice in {question!r}; kept {cleaned!r}")
+            question = cleaned.strip()
+            if len(question.split()) < 2:
+                return ""
     if not question:
         return ""
     lab = lab or DEFAULT_LAB
@@ -714,7 +749,9 @@ def handle_voice(question: str, lab: str, source: str = "student") -> str:
             "forward/back and 5 sideways and held still. 'dip' is the time constant lab: the student dips a room-temperature probe "
             "into hot water for a target number of seconds, reads the temperature, and computes the probe's time "
             "constant tau = -t / ln(1 - theta), where theta is how far the reading got toward the water temperature; "
-            "holding it in too long or too short while using the target time in the formula gives a wrong tau. The session_log is everything that happened, including what the "
+            "holding it in too long or too short while using the target time in the formula gives a wrong tau. "
+            "You measure the water temperature yourself when the student holds the probe in the water for 15 seconds, "
+            "so never ask them to type it. There is no motor in the dip lab. The session_log is everything that happened, including what the "
             "student said to you out loud and what the TA texted.\n"
             f"You are talking to {who}.\n"
             "Decide whether they want you to DO something. You can take at most one of these actions:\n"
@@ -1255,8 +1292,8 @@ def on_cooling_line(parts):
 
 # ---------------------------------------------------------------- calibration lab
 
-CAL_PITCH_OK = 4.0     # degrees forward/back from straight up that still counts as a good calibration
-CAL_ROLL_OK = 5.0      # degrees sideways
+CAL_PITCH_OK = 7.0     # degrees forward/back from straight up that still counts as a good calibration
+CAL_ROLL_OK = 8.0      # degrees sideways
 CAL_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", time.strftime("calib_%m%d_%H%M%S.csv"))
 
 
@@ -1293,7 +1330,7 @@ class CalibWatcher:
             self.wheel_votes, self.wheel_said = 0, False
         self.armed = armed
         offset = self.last_cal["pitch"] if (cal and self.last_cal) else None
-        send({"lab": "calib", "t": t, "pitch": pitch, "roll": roll, "angle": angle, "rate": rate, "pwm": pwm,
+        send({"lab": "calib", "ok_pitch": CAL_PITCH_OK, "ok_roll": CAL_ROLL_OK, "t": t, "pitch": pitch, "roll": roll, "angle": angle, "rate": rate, "pwm": pwm,
               "armed": armed, "wheel": wheel, "calibrated": cal, "offset": offset})
         recent["calib"] = {"forward_back_tilt_deg": pitch, "sideways_tilt_deg": roll, "calibrated": cal,
                            "motor_armed": armed, "last_calibration": self.last_cal}
@@ -1311,12 +1348,12 @@ class CalibWatcher:
                       "If the real wheels drive toward the lean, the encoder sign in this check is flipped.")
 
         # After a bad calibration, say once when the robot is finally held straight.
-        if not self.coached and not armed and abs(pitch) <= CAL_PITCH_OK - 1 and abs(roll) <= CAL_ROLL_OK - 1:
+        if not self.coached and not armed and abs(pitch) <= CAL_PITCH_OK - 2 and abs(roll) <= CAL_ROLL_OK - 2:
             if not self.straight_since:
                 self.straight_since = time.time()
-            elif time.time() - self.straight_since > 1.2:
+            elif time.time() - self.straight_since > 0.8:
                 self.coached = True
-                text = f"That's straight now, {abs(pitch):.0f} degrees forward and {abs(roll):.0f} sideways. Say calibrate."
+                text = "That's straight now. Say calibrate."
                 send({"type": "answer", "question": "", "text": text})
         else:
             self.straight_since = 0.0
@@ -1329,7 +1366,8 @@ class CalibWatcher:
         except (ValueError, IndexError):
             return
         pdir = "toward the batteries" if pitch > 0 else "away from the batteries"
-        facts = {"pitch": f"{abs(pitch):.1f}", "roll": f"{abs(roll):.1f}", "pdir": pdir, "g": f"{g:.2f}"}
+        facts = {"pitch": f"{abs(pitch):.0f}", "roll": f"{abs(roll):.0f}", "pdir": pdir, "g": f"{g:.2f}",
+                 "off": f"{max(abs(pitch), abs(roll)):.0f}"}
         off = max(abs(pitch), abs(roll))
         if result != "ok":
             if g < 0.85 or g > 1.15:
@@ -1346,7 +1384,7 @@ class CalibWatcher:
             issue = "cal_tilted"
         elif self.bad_before is not None:
             issue = "cal_fixed"
-            facts.update(before=f"{self.bad_before:.0f}", after=f"{off:.1f}")
+            facts.update(before=f"{self.bad_before:.0f}", after=f"{max(1, round(off)):.0f}")
         else:
             issue = "cal_ok"
         good = issue in OK_ISSUES
@@ -1381,7 +1419,7 @@ class CalibWatcher:
         elif "fault" in line:
             text = "The board has a fault. Press its reset button, then calibrate again."
         else:
-            text = "I can't arm it while it's tilted or moving. Hold it straight and still, then say arm again."
+            text = "Hold it straight and still, then say arm again."
         send({"type": "answer", "question": "", "text": text})
 
 
@@ -1398,7 +1436,14 @@ class DipWatcher:
     Kelvin judges each dip, explains what a timing mistake does to the time constant, and can turn on the
     board's timing cue (beep and blinking light at the target time) as the fix."""
 
+    TOL = 1.5                       # seconds off the target that still counts as on time
+    WARM = 3.0                      # degrees above room temperature at the start that counts as "not cooled"
+    offset = 0.0                    # seconds the board's timing reads long (set with --dip-offset)
+
     def __init__(self):
+        self.last_reading = 0.0     # when the last temperature arrived
+        self.connected_at = 0.0
+        self.silent_warned = False
         self.target = 4.0
         self.water = None
         self.room = None
@@ -1408,17 +1453,20 @@ class DipWatcher:
         self.bad_before = None      # timing error (s) of the last mistimed dip, for "that worked"
 
     def state(self):
-        return {"cue": self.cue, "target": self.target, "water": self.water, "room": self.room,
+        return {"cue": self.cue, "target": self.target, "tol": self.TOL, "water": self.water, "room": self.room,
                 "in_water": self.in_water, "last": self.last}
 
     def push(self):
         send({"type": "dip_state", "lab": "dip", **self.state()})
 
     def on_connect(self):
+        self.connected_at, self.silent_warned = time.time(), False
         time.sleep(2.5)             # the Uno restarts when the port opens
         dip_link.write(f"T,{self.target:g}")
         if self.water:
             dip_link.write(f"W,{self.water:g}")
+        if self.offset:
+            dip_link.write(f"O,{self.offset:g}")
         dip_link.write(f"B,{1 if self.cue else 0}")
         print(f"Sent dip settings to the probe board: target {self.target:g} s, water {self.water or 'not set'}, cue {'on' if self.cue else 'off'}")
 
@@ -1430,8 +1478,8 @@ class DipWatcher:
         if on:
             send({"type": "dip_cue", "lab": "dip"})
         self.push()
-        return (f"Done. The board will beep and blink at {self.target:g} seconds. Pull the probe out on the beep, "
-                "and I'll check the next dip." if on else "The timing cue is off.")
+        return (f"Done. I'll beep at {self.target:g} seconds. Dip again and pull out on the beep."
+                if on else "The timing cue is off.")
 
     def set_water(self, v, who="student"):
         self.water = round(v, 1)
@@ -1455,15 +1503,25 @@ class DipWatcher:
         try:
             if p[0] == "C":
                 t, temp = float(p[1]), float(p[2])
+                self.last_reading = time.time()
+                if self.silent_warned:
+                    self.silent_warned = False
+                    send({"type": "answer", "question": "", "text": f"The probe is reading again: {temp:.1f} degrees."})
                 send({"lab": "dip", "t": t, "temp": temp, "water": self.water, "in_water": self.in_water})
                 recent["dip"] = {"probe_temp_c": temp, **self.state()}
             elif p[0] == "E" and p[1] == "IN":
                 self.in_water = True
-                send({"type": "dip_event", "lab": "dip", "event": "in"})
+                send({"type": "dip_event", "lab": "dip", "event": "in", "insert_ms": float(p[3]), "target": self.target})
             elif p[0] == "E" and p[1] == "CUE":
                 send({"type": "dip_event", "lab": "dip", "event": "cue"})
             elif p[0] == "A":
                 print("[probe]", line)
+                if p[1] == "NOPROBE" and not self.silent_warned:
+                    self.silent_warned = True
+                    send({"type": "answer", "question": "", "text": "The probe isn't answering. A probe wire is loose. "
+                          "Check red to 5 volts, yellow to pin 2, and black to ground."})
+                if p[1] == "CONTACT":
+                    print("[dip] water-contact wires detected: dips are now timed exactly")
                 if p[1] == "ROOM":
                     self.room = float(p[2])
                     self.push()
@@ -1484,7 +1542,7 @@ class DipWatcher:
                      "flags": flags, "error_s": round(err, 2)}
         f = {"dwell": f"{dwell:.1f}", "target": f"{self.target:g}"}
         fix = None
-        long_dip = dwell >= max(10.0, 2.5 * self.target)
+        long_dip = dwell >= max(8.0, 2 * self.target)
         if long_dip and ("NO_TWATER" in flags or "SETTLED" in flags):
             # a long soak is how the student measures the water temperature
             self.water = round(read, 1)
@@ -1493,21 +1551,22 @@ class DipWatcher:
             f["water"] = f"{self.water:g}"
         elif "NO_TWATER" in flags:
             issue = "dip_need_water"
-        elif "LATE" in flags or "EARLY" in flags:
+        elif abs(err) > self.TOL:          # Kelvin's own tolerance; the board's LATE/EARLY flags use 0.5 s
+            late = err > 0
             if self.cue:
-                f["advice"] = "The cue is on, so pull it out the moment it beeps."
+                f["advice"] = "Pull it out on the beep."
             else:
-                f["advice"] = "Want a beep at the right moment? Say fix it."
+                f["advice"] = f"Say fix it and I'll beep at {self.target:g} seconds."
                 fix = {"cue": 1}
             if tau and tau_a:
-                issue = "dip_late" if "LATE" in flags else "dip_early"
+                issue = "dip_late" if late else "dip_early"
                 f.update(tau_assumed=f"{tau_a:.1f}", tau_actual=f"{tau:.1f}", pct=f"{abs(tau_a - tau) / tau * 100:.0f}")
             else:
                 issue = "dip_timing"
             self.bad_before = abs(err)
-        elif "NOT_RESET" in flags:
+        elif self.room is not None and start - self.room > self.WARM:
             issue = "dip_not_reset"
-            f.update(start=f"{start:.1f}", above=f"{start - (self.room or start):.1f}", room=f"{(self.room or 22):.0f}")
+            f.update(start=f"{start:.0f}", above=f"{start - self.room:.0f}", room=f"{self.room:.0f}")
         elif tau is None:
             issue = "dip_need_water" if not self.water else "dip_timing"
             f["advice"] = "The reading had already settled, so try a shorter dip."
@@ -1536,6 +1595,21 @@ class DipWatcher:
 
 
 dip_watch = DipWatcher()
+
+
+def dip_silence_watchdog():
+    """kelvin_dip.ino prints nothing at all when the sensor read fails (a loose probe wire), so say it out loud."""
+    while True:
+        time.sleep(2)
+        w = dip_watch
+        if not dip_link or isinstance(dip_link, FakeDip) or w.silent_warned or not w.connected_at:
+            continue
+        if time.time() - max(w.last_reading, w.connected_at) > 7:
+            w.silent_warned = True
+            text = ("The probe board is connected, but no temperature is coming in. A probe wire is probably loose. "
+                    "Check red to 5 volts, yellow to pin 2, black to ground, and the resistor between red and yellow.")
+            print("[dip] no temperature readings for 7 seconds: the sensor read is failing (loose probe wire?)")
+            send({"type": "answer", "question": "", "text": text})
 
 
 # ---------------------------------------------------------------- line routing
@@ -1948,6 +2022,8 @@ def main():
     ap.add_argument("--dip-port", help="Uno running kelvin_dip.ino, for the time constant lab, e.g. COM16")
     ap.add_argument("--water-temp", type=float, help="hot water temperature in C for the time constant lab")
     ap.add_argument("--dip-seconds", type=float, default=4.0, help="target dip time in seconds")
+    ap.add_argument("--dip-tolerance", type=float, default=DipWatcher.TOL, help="seconds off the target that still counts as on time")
+    ap.add_argument("--dip-offset", type=float, default=0.0, help="seconds the probe board's dip timing reads long (measure with a stopwatch)")
     ap.add_argument("--lab", choices=["motor", "cooling", "calib", "dip"], help="lab the dashboard opens on")
     ap.add_argument("--fake", action="store_true", help="simulate both boards")
     ap.add_argument("--kp", type=float, default=settings["kp"])
@@ -1965,6 +2041,7 @@ def main():
     stepper.update(low=args.low, high=args.high, seconds=args.step_seconds)
 
     dip_watch.target, dip_watch.water = args.dip_seconds, args.water_temp
+    dip_watch.TOL, dip_watch.offset = args.dip_tolerance, args.dip_offset
     cooling = None
     if args.fake:
         dip_link = FakeDip()
@@ -2050,6 +2127,7 @@ def main():
     threading.Thread(target=console, daemon=True).start()
     threading.Thread(target=run_stepper, daemon=True).start()
     threading.Thread(target=stuck_watchdog, daemon=True).start()
+    threading.Thread(target=dip_silence_watchdog, daemon=True).start()
 
     ai = "Gemini" if os.environ.get("GEMINI_API_KEY") else "Claude" if os.environ.get("ANTHROPIC_API_KEY") else None
     print("\n  Dashboard: open http://localhost:8000 in Edge")

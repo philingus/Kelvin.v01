@@ -87,6 +87,11 @@
   .cam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .cam .camnote { position: absolute; left: 0; right: 0; bottom: 0; padding: 6px 10px; font: 600 13px var(--sans); color: #fff; background: linear-gradient(transparent, rgba(0,0,0,.72)); }
   .cam .camwait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 12px; font: 14px var(--sans); color: #cfd6e6; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 0; }
+  .chips button { font: 600 12.5px var(--sans); background: var(--card); border: 1.5px solid var(--rule); color: var(--ink-soft); padding: 4px 10px; border-radius: 999px; cursor: pointer; }
+  .chips button:hover { border-color: var(--ink); color: var(--ink); }
+  .chips button kbd { font: 11px var(--mono); opacity: .6; margin-left: 5px; }
+  .chips .hint { font: 12.5px var(--sans); color: var(--ink-soft); align-self: center; margin-right: 2px; }
   .camBtn { font: 600 12.5px var(--sans); background: transparent; border: 1.5px solid var(--ink); color: var(--ink); padding: 4px 11px; border-radius: 7px; margin-right: 12px; cursor: pointer; }
   .camBtn.on, .camBtn:hover { background: var(--ink); color: var(--card); }
   .log li img.shot, .rtable img.shot { display: block; margin-top: 5px; width: 132px; border-radius: 6px; border: 1.5px solid #c0392b; }
@@ -249,6 +254,7 @@
         <input id="askInput" placeholder="Ask Kelvin about your experiment…">
         <button type="submit" class="askBtn">Ask</button>
       </form>
+      <div class="chips" id="chips"></div>
       <div class="rx">
         <div class="head"><h3>Suggested fix</h3><div class="settings" id="settingsLine"></div></div>
         <div class="body"><div id="rxBody"><div class="empty">Nothing to fix right now.</div></div><button class="apply" id="applyBtn" disabled>Apply fix</button></div>
@@ -298,7 +304,7 @@
 // ------------------------------------------------------------ config
 const WS_URL = "ws://localhost:8000/ws";
 const WINDOW_S = { motor: 10, cooling: 120, calib: 15, dip: 30 };
-const CAL_OK = { pitch: 4, roll: 5 };                  // same limits as the backend
+const CAL_OK = { pitch: 7, roll: 8 };                  // same limits as the backend
 const LABS = {
   motor: {
     explain: "<b>What you're looking at:</b> a student's code is trying to hold a robot's wheel at a set speed. The blue line is the real wheel, the dashed line is where it should be.",
@@ -345,10 +351,12 @@ function handle(msg) {
   if (msg.type === "fix_update") { fixes[msg.lab || "motor"] = msg.fix; return render(); }
   if (msg.type === "undone") return markUndone();
   if (msg.type === "action" && msg.action === "switch_lab") return switchLab(LABS[msg.lab] ? msg.lab : "motor");
-  if (msg.type === "dip_state") { dipState = msg; return render(); }
+  if (msg.type === "dip_state") { dipState = Object.assign({}, msg, msg.in_water ? { in_at: dipState.in_at, insert_ms: dipState.insert_ms } : {}); return render(); }
   if (msg.type === "dip_event") {
-    dipState.in_water = msg.event !== "out";
-    marks.dip.push({ t: nowT("dip"), text: msg.event === "cue" ? "beep!" : "in", good: true });
+    dipState.in_water = true;
+    if (msg.event === "in") { dipState.insert_ms = msg.insert_ms; dipState.in_at = performance.now(); dipState.beeped = false; if (lab !== "dip") switchLab("dip"); }
+    if (msg.event === "cue") { blip(1900, 350, 0.5); dipState.beeped = true; }
+    marks.dip.push({ t: msg.event === "in" && msg.insert_ms ? msg.insert_ms / 1000 : nowT("dip"), text: msg.event === "cue" ? "beep!" : "in", good: true });
     return;
   }
   if (msg.type === "dip_cue") {
@@ -374,7 +382,7 @@ function handle(msg) {
   if (msg.lab === "motor") { latest.motor = msg; push("motor", { t: msg.t / 1000, a: msg.speed, b: msg.target }); }
   else if (msg.lab === "cooling") { latest.cooling = msg; push("cooling", { t: msg.t / 1000, a: msg.temp, b: msg.expected }); }
   else if (msg.lab === "dip") { latest.dip = msg; push("dip", { t: msg.t / 1000, a: msg.temp, b: msg.water === null ? undefined : msg.water }); }
-  else if (msg.lab === "calib") { latest.calib = msg; push("calib", { t: msg.t / 1000, a: msg.pitch, b: msg.roll }); }
+  else if (msg.lab === "calib") { latest.calib = msg; if (msg.ok_pitch) { CAL_OK.pitch = msg.ok_pitch; CAL_OK.roll = msg.ok_roll; } push("calib", { t: msg.t / 1000, a: msg.pitch, b: msg.roll }); }
 }
 function push(which, p) {
   const s = series[which];
@@ -491,10 +499,10 @@ function speak(text, followUp) {   // followUp: let the student answer without s
     setTimeout(() => {
       utter = new SpeechSynthesisUtterance(spoken);       // kept in a variable so Chrome doesn't drop it mid-sentence
       if (voicePick) utter.voice = voicePick;
-      utter.rate = 1.0; utter.pitch = 0.95; utter.volume = 0.9;
-      quietUntil = Date.now() + 1500 + spoken.split(/\s+/).length * 450;   // rough speaking time, in case onend never fires
+      utter.rate = 1.1; utter.pitch = 0.95; utter.volume = 0.9;
+      quietUntil = Date.now() + 1200 + spoken.split(/\s+/).length * 380;   // rough speaking time, in case onend never fires
       if (handsFree && followUp) openFollowUp(quietUntil);
-      utter.onend = utter.onerror = () => { quietUntil = Date.now() + 700; if (handsFree && followUp) openFollowUp(quietUntil); };
+      utter.onend = utter.onerror = () => { quietUntil = Date.now() + 450; if (handsFree && followUp) openFollowUp(quietUntil); };
       speechSynthesis.speak(utter);
     }, 120);
   } catch (e) {}
@@ -567,7 +575,29 @@ $("askForm").onsubmit = e => { e.preventDefault(); askKelvin($("askInput").value
 // Hands-free: click the mic once. Kelvin keeps listening and answers anything that starts with "Kelvin".
 // Right after you turn the mic on (or say just "Kelvin"), the next sentence counts as a question too.
 const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
-const WAKE = /\b(kelvin|kelvins|calvin|kevin|kelven)\b[\s,.!?:]*/i;
+const WAKE = /\b(?:(?:hey|hi|ok|okay|yo)\s+)?(kelvin|kelvins|kelvin's|calvin|calvins|calvin's|kevin|kelven|kelvyn|kelvan|melvin|elvin|kellen|kelton|calving|cal vin|kel vin)\b[\s,.!?:]*/i;
+// Commands Kelvin acts on the instant they're heard, without waiting for the browser's final transcript.
+const QUICK = [
+  [/\bdisarm\b|\bstop\b/i, "stop", ["calib", "dip", "motor"]],
+  [/\barm\b/i, "arm it", ["calib"]],
+  [/\b(re-?)?calibrat\w*/i, "calibrate", ["calib"]],
+  [/\bfix\b|\bapply\b|\bgo ahead\b/i, "fix it", ["calib", "dip"]],
+];
+const ASKING = /^\W*(is|was|are|what|why|how|did|does|do i|should|when|where|who|explain|tell me)\b/i;
+function quickCommand(rest) {
+  if (!rest || ASKING.test(rest) || rest.split(/\s+/).length > 5) return null;
+  for (const [re, say, labs] of QUICK) if (labs.includes(lab) && re.test(rest)) return say;
+  return null;
+}
+let audioCtx = null;
+function blip(freq, ms, vol) {            // short tone: "I heard you", and the dip timing cue
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = freq; g.gain.value = vol || 0.15; o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + ms / 1000);
+  } catch (e) {}
+}
 let rec = null, handsFree = false, armedUntil = 0, quietUntil = 0, restarts = 0, lastHeard = 0;
 const FOLLOW_UP_MS = 8000;   // after Kelvin talks, you can answer without saying "Kelvin" first
 function openFollowUp(from) {
@@ -583,15 +613,20 @@ function setMicUI(text) {
   $("micBtn").title = handsFree ? "Listening. Click to stop." : "Talk to Kelvin hands-free";
   $("askInput").placeholder = text || (handsFree ? 'Listening… say "Kelvin, …"' : "Ask Kelvin about your experiment…");
 }
-function heard(text) {
-  if (Date.now() < quietUntil) return;                  // ignore Kelvin's own voice
+const kelvinTalking = () => Date.now() < quietUntil || (window.speechSynthesis && speechSynthesis.speaking);
+function fire(q) {                        // run a command right now, cutting Kelvin off if it's mid-sentence
+  try { if (speechSynthesis.speaking) speechSynthesis.cancel(); } catch (e) {}
+  quietUntil = 0; armedUntil = 0; blip(880, 90);
+  askKelvin(q);
+}
+function heard(text) {                    // a finished sentence from the mic
   text = text.trim(); if (!text) return;
   const m = text.match(WAKE);
   if (m) {
     const q = text.slice(m.index + m[0].length).trim();
-    if (q.split(/\s+/).length >= 2) { armedUntil = 0; askKelvin(q); }
-    else { armedUntil = Date.now() + 7000; setMicUI("Yes? I'm listening…"); }
-  } else if (Date.now() < armedUntil && text.split(/\s+/).length >= 2) {
+    if (q) { armedUntil = 0; askKelvin(q); }                                 // one word is enough: "Kelvin, calibrate"
+    else { armedUntil = Date.now() + 8000; blip(660, 120); setMicUI("Yes? Go ahead…"); }
+  } else if (Date.now() < armedUntil && (text.split(/\s+/).length >= 2 || quickCommand(text))) {
     armedUntil = 0; askKelvin(text);
   }
   if (!armedUntil) setTimeout(() => setMicUI(), 300);
@@ -599,13 +634,25 @@ function heard(text) {
 function startListening() {
   rec = new Rec(); rec.lang = "en-US"; rec.continuous = true; rec.interimResults = true;
   lastHeard = Date.now();
-  rec.onstart = rec.onaudiostart = rec.onsoundstart = () => { lastHeard = Date.now(); };
+  let done = new Set(), tainted = new Set();            // per listening session: results already used, or that are Kelvin's own voice
+  rec.onstart = () => { lastHeard = Date.now(); done = new Set(); tainted = new Set(); };
+  rec.onaudiostart = rec.onsoundstart = () => { lastHeard = Date.now(); };
   rec.onresult = ev => {
     lastHeard = Date.now(); restarts = 0;
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
-      const r = ev.results[i];
-      if (Date.now() >= quietUntil && (WAKE.test(r[0].transcript) || Date.now() < armedUntil)) $("askInput").value = r[0].transcript;
-      if (r.isFinal) { $("askInput").value = ""; heard(r[0].transcript); }
+      const r = ev.results[i], tr = r[0].transcript.trim();
+      if (!tr || done.has(i)) continue;
+      const wake = tr.match(WAKE);
+      // The mic hears Kelvin's own voice. Anything that started while Kelvin was talking is ignored,
+      // unless it has the wake word in it (Kelvin never says its own name), so you can interrupt.
+      if (kelvinTalking() && !wake) { tainted.add(i); continue; }
+      if (tainted.has(i) && !wake) continue;
+      if (document.activeElement !== $("askInput")) $("askInput").value = r.isFinal ? "" : tr;   // show what the mic hears
+      const rest = wake ? tr.slice(wake.index + wake[0].length).trim() : (Date.now() < armedUntil ? tr : null);
+      const q = rest === null ? null : quickCommand(rest);
+      if (q) { done.add(i); $("askInput").value = ""; fire(q); continue; }
+      if (wake && !rest && !r.isFinal && Date.now() > armedUntil) { armedUntil = Date.now() + 8000; blip(660, 120); setMicUI("Yes? Go ahead…"); }
+      if (r.isFinal) { done.add(i); heard(tr); }
     }
   };
   rec.onerror = ev => {
@@ -613,8 +660,8 @@ function startListening() {
   };
   rec.onend = () => {                                   // the browser stops listening now and then; quietly restart
     if (!handsFree) return setMicUI();
-    if (++restarts > 200) { handsFree = false; return setMicUI("Mic stopped. Click 🎤 to listen again."); }
-    setTimeout(() => { if (handsFree) try { rec.start(); } catch (e) {} }, 250);
+    if (++restarts > 400) { handsFree = false; return setMicUI("Mic stopped. Click 🎤 to listen again."); }
+    setTimeout(() => { if (handsFree) try { rec.start(); } catch (e) {} }, 120);
   };
   rec.start();
 }
@@ -624,7 +671,8 @@ setInterval(() => {
 }, 3000);
 $("micBtn").onclick = () => {
   if (!Rec) return;
-  handsFree = !handsFree; restarts = 0;
+  handsFree = !handsFree; restarts = 0; blip(660, 60, 0.05);
+  try { localStorage.setItem("kelvinMic", handsFree ? "on" : "off"); } catch (e) {}
   if (handsFree) { try { speechSynthesis.cancel(); } catch (e) {} armedUntil = Date.now() + 8000; setMicUI("Go ahead, I'm listening…"); startListening(); }
   else { armedUntil = 0; try { rec && rec.stop(); } catch (e) {} setMicUI(); }
 };
@@ -862,9 +910,30 @@ function switchLab(v) {
   render();
 }
 
+// One tap (or Alt+number) does what the voice command does. The Operator's silent backup if the room is loud.
+const CHIPS = {
+  calib: ["calibrate", "fix it", "arm it", "stop", "send my report to the TA"],
+  dip: ["fix it", "turn the cue off", "send my report to the TA"],
+  motor: ["apply it", "undo", "hold the speed at 80", "send my report to the TA"],
+  cooling: ["send my report to the TA"],
+};
+function renderChips() {
+  const key = lab + live;
+  if (renderChips.key === key) return; renderChips.key = key;
+  $("chips").innerHTML = '<span class="hint">Say "Kelvin, …" or tap:</span>' + (CHIPS[lab] || []).map((c, i) =>
+    '<button type="button" data-q="' + c + '">' + c.replace(" to the TA", " → TA").replace("send my ", "") + "<kbd>Alt+" + (i + 1) + "</kbd></button>").join("");
+  $("chips").querySelectorAll("button").forEach(b => b.onclick = () => askKelvin(b.dataset.q));
+}
+document.addEventListener("keydown", e => {
+  if (!e.altKey || !/^[1-9]$/.test(e.key)) return;
+  const c = (CHIPS[lab] || [])[+e.key - 1];
+  if (c) { e.preventDefault(); askKelvin(c); }
+});
+
 const STAMPS = { stable: "Stable", mistake: "Mistake caught", fixing: "Testing fix", fixed: "Fixed" };
 function render() {
   const L = LABS[lab], st = state[lab];
+  renderChips();
   $("explain").innerHTML = L.explain;
   $("verdict").className = "verdict " + (st === "stable" ? "" : st);
   $("stamp").textContent = lab === "calib" && st === "fixing" ? "Calibrating" : lab === "calib" && st === "fixed" ? "Calibrated" : STAMPS[st];
@@ -935,8 +1004,10 @@ function readingsHTML() {
     const k = latest.dip, d = dipState.last, off = d ? Math.abs(d.dwell - dipState.target) : null;
     items = [
       ["Probe", n(k.temp, 1), "°C", dipState.in_water ? "in the water" : dipState.water ? "water is " + dipState.water + " °C" : "water temperature not set yet"],
-      ["Last dip", d ? n(d.dwell, 1) : "--", d ? " s" : "", d ? (off <= 0.5 ? "on time (target " + dipState.target + " s)" : (d.dwell > dipState.target ? "too long" : "too short") + " (target " + dipState.target + " s)") : "target " + dipState.target + " s"],
-      ["Time constant", d && d.tau ? n(d.tau, 1) : "--", d && d.tau ? " s" : "", d && d.tau_assumed && off > 0.5 ? "the handout formula would say " + n(d.tau_assumed, 1) + " s" : "how fast the probe responds"],
+      dipState.in_water && dipState.in_at
+        ? ["In the water", n((performance.now() - dipState.in_at) / 1000, 1), " s", "target " + dipState.target + " s" + (dipState.cue ? ", pull out on the beep" : "")]
+        : ["Last dip", d ? n(d.dwell, 1) : "--", d ? " s" : "", d ? (off <= (dipState.tol || 1) ? "on time (target " + dipState.target + " s)" : (d.dwell > dipState.target ? "too long" : "too short") + " (target " + dipState.target + " s)") : "target " + dipState.target + " s"],
+      ["Time constant", d && d.tau ? n(d.tau, 1) : "--", d && d.tau ? " s" : "", d && d.tau_assumed && off > (dipState.tol || 1) ? "the handout formula would say " + n(d.tau_assumed, 1) + " s" : "how fast the probe responds"],
     ];
   } else if (lab === "calib") {
     const k = latest.calib, cal = k.calibrated && k.offset !== null && k.offset !== undefined;
@@ -1024,6 +1095,9 @@ function draw() {
   if (lab === "calib") return drawTilt(x, w, h);
   const s = series[lab], L = 44, R = w - 12, T = 30, B = h - 24;
   let lo = lab === "motor" ? 0 : 15, hi = lab === "motor" ? 140 : lab === "dip" ? 65 : 85;
+  if (lab === "dip" && s.length) {       // zoom to the dip so small changes are easy to see
+    lo = Math.min(...s.map(p => p.a)) - 2; hi = Math.max(...s.map(p => p.a), dipState.water || 0) + 3;
+  }
   for (const p of s) { if (p.a > hi) hi = p.a; if (p.a < lo) lo = p.a; }
   hi = Math.ceil(hi / 10) * 10; lo = Math.floor(lo / 10) * 10;
   const tEnd = s.length ? s[s.length - 1].t : 0, tStart = tEnd - WINDOW_S[lab];
@@ -1061,7 +1135,7 @@ function draw() {
 
 let lastReadings = 0;
 function frame(ts) {
-  if (ts - lastReadings > 120) {
+  if (ts - lastReadings > (lab === "dip" && dipState.in_water ? 50 : 120)) {
     $("readings").innerHTML = readingsHTML(); lastReadings = ts;
     if (lab === "calib") $("settingsLine").textContent = latest.calib.calibrated ? "calibrated" : "not calibrated yet";
   }
@@ -1118,6 +1192,7 @@ $("cameraBtn").onclick = () => {
 };
 $("camSel").onchange = e => camStart(e.target.value);
 window.addEventListener("pagehide", camStop);
+try { if (Rec && localStorage.getItem("kelvinMic") === "on") { handsFree = true; setMicUI(); startListening(); } } catch (e) {}
 try { if (localStorage.getItem("kelvinCam") === "on") camStart(localStorage.getItem("kelvinCamId") || undefined); } catch (e) {}
 
 render(); connect(); requestAnimationFrame(frame);

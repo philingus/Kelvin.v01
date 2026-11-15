@@ -27,6 +27,19 @@
 //   N        reset trial counter
 //
 // Flags in the D line: OK, LATE, EARLY, NOT_RESET, NO_TWATER, SETTLED
+//
+// Version 2 (faster for live demos):
+//   - "in" triggers on a 0.5 C rise instead of 1.0
+//   - "out" triggers when a fast-rising reading stops rising for 1 second,
+//     instead of waiting for it to fall 0.75 C in air (which took several seconds)
+//   - prints A,NOPROBE when the sensor can't be read (loose wire)
+//
+// OPTIONAL water-contact wires (recommended: instant, exact in/out timing):
+//   Jumper from Uno A0, taped along the probe so its metal tip sits beside the probe tip.
+//   Jumper from Uno GND, with its metal tip resting in the water (tape it inside the cup).
+//   The board switches to contact timing by itself the first time the A0 wire touches the water
+//   (prints A,CONTACT,1). Without the wires it times dips from the temperature alone, which lags,
+//   because the sensor inside the steel tube keeps warming after the probe leaves the water.
 
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -35,14 +48,20 @@
 const uint8_t ONE_WIRE_BUS = 2;
 const uint8_t LED_PIN = 13;
 const uint8_t BUZZER_PIN = 8;
+const uint8_t CONTACT_PIN = A0;         // optional water-contact wire (see top of file)
+const int CONTACT_WET = 950;            // below this (of 1023) = the wire is in the water
+const int CONTACT_DRY = 985;            // above this = the wire is out
 
 const uint8_t RESOLUTION = 10;          // 10-bit: 0.25 C steps, ~188 ms conversion
 const unsigned long SAMPLE_MS = 200;    // 5 samples per second
 
 // Detection thresholds (tune tonight if needed)
-const float RISE_TRIGGER_C  = 1.0;   // rise above recent minimum => probe is in water
+const float RISE_TRIGGER_C  = 0.5;   // rise above recent minimum => probe is in water
 const float BASELINE_BAND_C = 0.3;   // samples within this of the minimum count as "still in air"
-const float DROP_TRIGGER_C  = 0.75;  // fall below in-water peak => probe was pulled out
+const float DROP_TRIGGER_C  = 0.5;   // fall below in-water peak => probe was pulled out
+const unsigned long STALL_MS = 1000; // a fast-rising reading that stops rising this long => pulled out
+const float STRONG_RISE_C   = 0.75;  // "fast-rising" = rose at least this much in the last second
+const unsigned long REARM_MS = 4000; // after a dip, wait for the reading to fall (or this long) before the next
 const float NOT_RESET_C     = 1.5;   // dip started this far above room temp => not cooled back
 const float TIMING_TOL_S    = 0.5;   // allowed error vs target dwell
 const float SETTLED_THETA   = 0.995; // beyond this the one-point tau formula breaks down
@@ -78,6 +97,16 @@ float startTemp = 0;
 float peakTemp = 0;
 unsigned long peakMs = 0;
 bool cueFired = false;
+bool strongRise = false;        // the reading was rising fast at its latest new high
+bool rearmed = true;            // ready to detect the next dip
+float lastDipPeak = 0;
+unsigned long lastDipEndMs = 0;
+uint8_t readFails = 0;
+bool contactMode = false;       // true once the contact wire has touched water
+bool contactWet = false;
+uint8_t wetCount = 0, dryCount = 0;
+unsigned long lastContactMs = 0;
+float lastTemp = NAN;
 
 unsigned long lastReqMs = 0;
 String cmdBuf = "";
@@ -174,7 +203,12 @@ void finishDip() {
 
 void processSample(float t, unsigned long ms) {
   // Ignore sensor error / power-on values
-  if (t < -100.0 || t == 85.0) return;
+  if (t < -100.0 || t == 85.0) {
+    if (++readFails >= 5) { readFails = 0; Serial.println("A,NOPROBE"); }
+    return;
+  }
+  readFails = 0;
+  lastTemp = t;
 
   Serial.print("C,");
   Serial.print(ms);
@@ -194,6 +228,16 @@ void processSample(float t, unsigned long ms) {
       break;
 
     case IN_AIR: {
+      if (contactMode) break;      // the contact wire decides when a dip starts
+      // Right after a dip the reading can creep up a little more. Don't call that a new dip.
+      if (!rearmed) {
+        if (t <= lastDipPeak - DROP_TRIGGER_C || ms - lastDipEndMs >= REARM_MS) {
+          rearmed = true;
+          clearHist();
+        } else {
+          break;
+        }
+      }
       pushHist(t, ms);
       if (histCount < 2) break;
 
@@ -216,6 +260,8 @@ void processSample(float t, unsigned long ms) {
         peakTemp = t;
         peakMs = ms;
         cueFired = false;
+        strongRise = false;
+        clearHist();
         state = IN_WATER;
         digitalWrite(LED_PIN, HIGH);
         Serial.print("E,IN,"); Serial.print(trial); Serial.print(","); Serial.println(insertMs);
@@ -223,8 +269,12 @@ void processSample(float t, unsigned long ms) {
       break;
     }
 
-    case IN_WATER:
-      if (t >= peakTemp) {
+    case IN_WATER: {
+      // Rise over the last second (the ring holds about 1 s of in-water samples)
+      float refTemp = (histCount < HIST) ? startTemp : histT[histHead];
+      pushHist(t, ms);
+      if (t > peakTemp) {
+        strongRise = (t - refTemp) >= STRONG_RISE_C;
         peakTemp = t;
         peakMs = ms;
       }
@@ -235,19 +285,62 @@ void processSample(float t, unsigned long ms) {
         Serial.print("E,CUE,"); Serial.print(trial); Serial.print(","); Serial.println(ms);
       }
 
-      if (t < peakTemp - DROP_TRIGGER_C) {
+      bool dropped = t <= peakTemp - DROP_TRIGGER_C;
+      bool stalled = strongRise && (ms - peakMs) >= STALL_MS;
+      if (!contactMode && (dropped || stalled)) {
         finishDip();
         digitalWrite(LED_PIN, LOW);
         state = IN_AIR;
+        rearmed = false;
+        lastDipPeak = peakTemp;
+        lastDipEndMs = ms;
         clearHist();
-        pushHist(t, ms);
       }
       break;
+    }
+  }
+}
+
+// Water-contact timing: called every 10 ms.
+void readContact(unsigned long now) {
+  int v = analogRead(CONTACT_PIN);
+  if (v < CONTACT_WET) { if (wetCount < 250) wetCount++; dryCount = 0; }
+  else if (v > CONTACT_DRY) { if (dryCount < 250) dryCount++; wetCount = 0; }
+
+  if (!contactWet && wetCount >= 3) {              // 30 ms in the water
+    contactWet = true;
+    if (!contactMode) { contactMode = true; Serial.println("A,CONTACT,1"); }
+    if (state != IN_WATER && !isnan(lastTemp)) {
+      if (state == WARMUP) { tRoom = lastTemp; Serial.print("A,ROOM,"); Serial.println(tRoom, 2); }
+      trial++;
+      insertMs = now - 30;
+      startTemp = lastTemp;
+      peakTemp = lastTemp;
+      peakMs = now;
+      cueFired = false;
+      strongRise = false;
+      clearHist();
+      state = IN_WATER;
+      digitalWrite(LED_PIN, HIGH);
+      Serial.print("E,IN,"); Serial.print(trial); Serial.print(","); Serial.println(insertMs);
+    }
+  } else if (contactWet && dryCount >= 10) {       // 100 ms out of the water (ignores splashes)
+    contactWet = false;
+    if (state == IN_WATER) {
+      peakTemp = lastTemp;                         // the reading at the moment it left the water
+      peakMs = now - 100;
+      finishDip();
+      digitalWrite(LED_PIN, LOW);
+      state = IN_AIR;
+      rearmed = true;
+      clearHist();
+    }
   }
 }
 
 void setup() {
   Serial.begin(9600);
+  pinMode(CONTACT_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
@@ -258,7 +351,7 @@ void setup() {
   sensors.requestTemperatures();
   lastReqMs = millis();
 
-  Serial.println("A,KELVIN_DIP_READY");
+  Serial.println("A,KELVIN_DIP_READY,2");
   Serial.println("time_ms,temp_c");
 }
 
@@ -266,6 +359,16 @@ void loop() {
   readSerial();
 
   unsigned long now = millis();
+  if (now - lastContactMs >= 10) {
+    lastContactMs = now;
+    readContact(now);
+    // fire the timing cue on time, not on the next temperature sample
+    if (state == IN_WATER && cueEnabled && !cueFired && (now - insertMs) / 1000.0 >= targetDwellS) {
+      cueFired = true;
+      tone(BUZZER_PIN, 2000, 200);
+      Serial.print("E,CUE,"); Serial.print(trial); Serial.print(","); Serial.println(now);
+    }
+  }
   if (now - lastReqMs >= SAMPLE_MS) {
     float t = sensors.getTempCByIndex(0);
     sensors.requestTemperatures();
